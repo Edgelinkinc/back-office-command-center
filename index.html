@@ -840,7 +840,12 @@ var SP = (function () {
     return xhr('POST', base() + '/_api/web/associatedmembergroup/users', { __metadata: { type: 'SP.User' }, LoginName: 'i:0#.f|membership|' + email });
   }
 
+  function removeMember(email) {
+    return xhr('POST', base() + "/_api/web/associatedmembergroup/users/removeByLoginName(@v)?@v='" + encodeURIComponent('i:0#.f|membership|' + email) + "'");
+  }
+
   return {
+    removeMember: removeMember,
     init: init, xhr: xhr, getAll: getAll, getItem: getItem, create: create, update: update, findBy: findBy, createOnce: createOnce,
     remove: remove, me: me, canManage: canManage, canRead: canRead, attach: attach, attachments: attachments,
     siteExists: siteExists, createSite: createSite, provisionList: provisionList, restrictList: restrictList, addMember: addMember, ensureUser: ensureUser
@@ -1914,9 +1919,9 @@ function contactsCard() {
 }
 function teamCard() {
   return '<section class="card"><div class="gh">Team &amp; access <span>Admin only · <button class="btn xs p" data-act="newperson">+ Add team member</button></span></div><div class="scrollx"><table class="tbl"><thead><tr><th>Person</th><th>Reports to</th><th>Access</th><th>Raises</th><th>Active</th><th></th></tr></thead><tbody>' +
-    S.people.slice().sort(function (a, b) { return (a.SortOrder || 99) - (b.SortOrder || 99); }).map(function (p) {
-      return '<tr><td><b>' + esc(p.Title) + '</b><div class="meta">' + esc(p.JobTitle) + ' · ' + esc(p.Email) + '</div></td><td>' + esc(p.ReportsTo ? nameOf(p.ReportsTo) : '—') + '</td><td>' + chip(p.Access || 'Member', p.Access === 'Executive' ? 'plum' : p.Access === 'Manager' ? 'blu' : '') + '</td><td>' + esc(p.Raises || '—') + '</td><td>' + (p.Active === false ? 'No' : 'Yes') + '</td><td><button class="btn xs" data-act="editperson" data-id="' + esc(p._id) + '">Edit</button></td></tr>';
-    }).join('') + '</tbody></table></div><div class="meta" style="padding:8px 12px">New people also need site access: use Setup → Grant site access after adding them.</div></section>';
+    S.people.slice().sort(function (a, b) { return ((a.Active === false) - (b.Active === false)) || (a.SortOrder || 99) - (b.SortOrder || 99); }).map(function (p) {
+      return '<tr><td><b>' + esc(p.Title) + '</b><div class="meta">' + esc(p.JobTitle) + ' · ' + esc(p.Email) + '</div></td><td>' + esc(p.ReportsTo ? nameOf(p.ReportsTo) : '—') + '</td><td>' + chip(p.Access || 'Member', p.Access === 'Executive' ? 'plum' : p.Access === 'Manager' ? 'blu' : '') + '</td><td>' + esc(p.Raises || '—') + '</td><td>' + (p.Active === false ? chip('Left the team', 'gry') : 'Yes') + '</td><td><button class="btn xs" data-act="editperson" data-id="' + esc(p._id) + '">Edit</button></td></tr>';
+    }).join('') + '</tbody></table></div><div class="meta" style="padding:8px 12px">Adding someone gives them site access automatically. To remove someone who left, click Edit → Remove from team.</div></section>';
 }
 function routineModal(m) {
   var f = m.f;
@@ -1948,7 +1953,14 @@ function personModal(m) {
     '<div class="fld"><label for="pp-x">Raise requests</label><select id="pp-x" class="in" data-pmf="Raises">' + opt('', f.Raises, 'None') + opt('Submit', f.Raises) + opt('Approve', f.Raises) + '</select></div>' +
     '<div class="fld"><label for="pp-o">Order</label><input id="pp-o" class="in" type="number" data-pmf="SortOrder" value="' + esc(f.SortOrder) + '"></div>' +
     '<div class="fld"><span class="lbl">Active</span><label style="display:flex;gap:6px;align-items:center;height:34px"><input type="checkbox" data-pmf="Active"' + (f.Active !== false ? ' checked' : '') + '> Can sign in</label></div>' +
-    '</div>' + (m.err ? '<div class="err" style="margin-top:8px">' + esc(m.err) + '</div>' : '') + '</div><div class="dft" style="justify-content:flex-end"><button class="btn sm" data-act="closemodal">Cancel</button><button class="btn sm p" data-act="saveperson">Save</button></div></div>';
+    '</div>' + (m.err ? '<div class="err" style="margin-top:8px">' + esc(m.err) + '</div>' : '') +
+    (m.editId && f.Active !== false && f.Email !== S.myEmail ? '<div style="margin-top:14px;border-top:1px solid var(--line2);padding-top:12px"><div class="h" style="color:var(--red-t)">If they leave</div>' +
+      '<div class="fgrid"><div class="fld"><label for="pp-to">Hand their open work to</label><select id="pp-to" class="in" data-pmf="HandTo">' +
+      activePeople().filter(function (p) { return p.Email !== f.Email; }).map(function (p) { return opt(p.Email, f.HandTo || f.ReportsTo || S.myEmail, p.Title + (p.Email === S.myEmail ? ' (me)' : '')); }).join('') + '</select></div>' +
+      '<div class="fld" style="justify-content:flex-end"><button class="btn sm r" data-act="offboard">Remove from team</button></div></div>' +
+      '<div class="meta" style="margin-top:6px;white-space:normal">Moves their open tasks, stops their routines, moves anyone reporting to them up to their manager, and removes their access. Their finished work and history stay.</div></div>' : '') +
+    (m.editId && f.Active === false ? '<div class="meta" style="margin-top:10px">Not on the team — check “Can sign in” and Save to bring them back.</div>' : '') +
+    '</div><div class="dft" style="justify-content:flex-end"><button class="btn sm" data-act="closemodal">Cancel</button><button class="btn sm p" data-act="saveperson">Save</button></div></div>';
 }
 function contactModal(m) {
   var f = m.f;
@@ -2385,6 +2397,30 @@ function importContacts(file) {
   fr.readAsText(file);
 }
 
+/* ---------- offboarding ---------- */
+function offboard(personId, to) {
+  var p = rec('BOCC_People', personId), who = p.Email, moved = 0, archived = 0, stopped = 0;
+  toast('Removing ' + p.Title + '…');
+  SP.getAll('BOCC_Tasks', "OwnerEmail eq '" + who.replace(/'/g, "''") + "'").then(function (rows) {
+    rows.map(fromSP).forEach(function (t) { if (!S.tasks[t._id]) { S.tasks[t._id] = t; } });
+    tasksOf(who).forEach(function (t) {
+      if (!R.isOpen(t)) { return; }
+      if (t.Visibility === 'Private') { changeTask(t, { Archived: true }, 0); archived++; return; }
+      changeTask(t, { OwnerEmail: to, AssignedByEmail: S.myEmail, SeenByOwner: false,
+        Comments: (t.Comments || []).concat([{ by: S.myEmail, at: nowIso(), text: 'Handed over from ' + p.Title + ' (left the team).' }]) }, 0);
+      logActivity(t, 'Handed over', p.Title + ' → ' + nameOf(to)); moved++;
+    });
+    S.templates.forEach(function (t) { if (t.OwnerEmail === who && t.Active !== false) { Q.change('BOCC_Templates', t, { Active: false, EndDate: S.today }, 0); stopped++; } });
+    S.people.forEach(function (x) { if (x.ReportsTo === who) { Q.change('BOCC_People', x, { ReportsTo: p.ReportsTo || '' }, 0); } });
+    Q.change('BOCC_People', p, { Active: false }, 0);
+    render();
+    return SP.removeMember(who).then(function () { return true; }, function () { return false; });
+  }).then(function (accessRemoved) {
+    toast(p.Title + ' removed: ' + moved + ' open task' + (moved === 1 ? '' : 's') + ' moved to ' + firstName(to) + ', ' + stopped + ' routine' + (stopped === 1 ? '' : 's') + ' stopped' +
+      (archived ? ', ' + archived + ' private item' + (archived === 1 ? '' : 's') + ' archived' : '') + (accessRemoved ? ', site access removed.' : '. Site access still needs removing — ask Claude.'));
+  }, function (e) { toast('Stopped partway: ' + e.message + '. Run it again to finish — it picks up where it left off.'); });
+}
+
 /* ---------- raises ---------- */
 function raiseModal0(r) {
   S.modal = { type: 'raise', editId: r ? r._id : null, key: r ? r.RequestKey : 'RR-' + R.uid('x').slice(2, 10).toUpperCase(),
@@ -2603,7 +2639,7 @@ var A = {
     S.confirmBack = m; S.modal = { type: 'confirm', title: 'Discard this conversation?', text: 'Your typed notes will be deleted. To keep them for later, choose Keep draft — it stays saved and reopens next time you click Log Conversation.', yes: 'Discard', no: 'Keep draft', act: 'discardlog', draftId: m.draftId };
     render();
   },
-  confirmyes: function () { var m = S.modal; if (m.act === 'discardlog') { clearDraft(m.draftId); S.confirmBack = null; S.modal = null; } else if (m.act === 'stoproutine') { var t = rec('BOCC_Templates', m.id); Q.change('BOCC_Templates', t, { Active: false, EndDate: S.today }, 0); S.modal = null; toast('Routine stopped · history kept'); } render(); },
+  confirmyes: function () { var m = S.modal; if (m.act === 'offboard') { S.modal = null; render(); offboard(m.id, m.to); return; } if (m.act === 'discardlog') { clearDraft(m.draftId); S.confirmBack = null; S.modal = null; } else if (m.act === 'stoproutine') { var t = rec('BOCC_Templates', m.id); Q.change('BOCC_Templates', t, { Active: false, EndDate: S.today }, 0); S.modal = null; toast('Routine stopped · history kept'); } render(); },
   scope: function (el) {
     var m = S.modal, t = S.tasks[m.id] || findTask(m.id), v = el.getAttribute('data-v');
     S.modal = null;
@@ -2668,7 +2704,17 @@ var A = {
     if (!f.Title || !/@/.test(f.Email || '')) { m.err = 'Name and a Microsoft email are required.'; render(); return; }
     var fields = { Title: f.Title, Email: lc(f.Email), JobTitle: f.JobTitle, ReportsTo: lc(f.ReportsTo), Access: f.Access, Raises: f.Raises, Active: f.Active !== false, SortOrder: f.SortOrder === '' ? 10 : +f.SortOrder };
     if (m.editId) { Q.change('BOCC_People', rec('BOCC_People', m.editId), fields, 0); S.modal = null; render(); return; }
-    createRec('BOCC_People', fields, 'Email').then(function (p) { S.people.push(p); S.modal = null; render(); toast('Added. Run Setup → Grant site access so they can sign in.'); }, function (e) { m.err = e.message; render(); });
+    createRec('BOCC_People', fields, 'Email').then(function (p) {
+      S.people.push(p); S.modal = null; render();
+      SP.addMember(p.Email).then(function () { toast(p.Title + ' added and given site access.'); },
+        function () { toast(p.Title + ' added. Their site access still needs to be granted — ask Claude or use Setup.'); });
+    }, function (e) { m.err = e.message; render(); });
+  },
+  offboard: function () {
+    var m = S.modal, p = rec('BOCC_People', m.editId), to = m.f.HandTo || p.ReportsTo || S.myEmail;
+    if (!personBy(to) || to === p.Email) { to = S.myEmail; }
+    S.modal = { type: 'confirm', title: 'Remove ' + p.Title + '?', text: 'Their open tasks go to ' + nameOf(to) + ', their routines stop, and they lose access. Finished work and history stay.', yes: 'Remove from team', act: 'offboard', id: p._id, to: to };
+    render();
   },
   backup: function (el) { backup(el.getAttribute('data-v')); },
   reloadaccess: function () { loadAccess(); },
