@@ -219,7 +219,7 @@ table.tbl{width:100%;border-collapse:collapse;font-size:13px}
 @media (max-width:480px){.fgrid,.fgrid.c3,.fgrid.c4{grid-template-columns:1fr}.span2{grid-column:auto}}
 
 </style>
-<script src="https://alcdn.msauth.net/browser/2.39.0/js/msal-browser.min.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.39.0/lib/msal-browser.min.js" crossorigin="anonymous"></script>
 </head>
 <body>
 <div id="app" aria-live="polite"></div>
@@ -2781,6 +2781,7 @@ function restorePending() {
 function boot() {
   screen('<div style="padding:40px;text-align:center;color:var(--mute)">Loading…</div>');
   if (CONFIG.clientId.indexOf('__') === 0) { messageScreen('Not configured yet', 'This page needs its Azure app ID. Ask HR.'); return; }
+  if (typeof msal === 'undefined') { messageScreen('Couldn’t reach Microsoft sign-in', 'The Microsoft sign-in library didn’t load. Check your connection and reload. If it keeps happening, tell HR.', '<button class="btn p" onclick="location.reload()">Reload</button>'); return; }
   AUTH.init().then(function (account) {
     if (!account) { loginScreen(); return; }
     SP.init(CONFIG, AUTH.token);
