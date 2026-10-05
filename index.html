@@ -926,7 +926,7 @@ var AUTH = (function () {
   var SCOPES = [CONFIG.spHost + '/AllSites.Manage'];
   function init() {
     app = new msal.PublicClientApplication({
-      auth: { clientId: CONFIG.clientId, authority: 'https://login.microsoftonline.com/' + CONFIG.tenantId, redirectUri: location.origin + location.pathname },
+      auth: { clientId: CONFIG.clientId, authority: 'https://login.microsoftonline.com/' + CONFIG.tenantId, redirectUri: location.origin + location.pathname.replace(/index\.html$/i, '') },
       cache: { cacheLocation: 'localStorage', storeAuthStateInCookie: false }
     });
     return app.handleRedirectPromise().then(function (res) {
@@ -936,7 +936,14 @@ var AUTH = (function () {
       return account;
     });
   }
-  function login() { return app.loginRedirect({ scopes: SCOPES, prompt: 'select_account' }); }
+  function clearStuck() { try { var k, i; for (i = sessionStorage.length - 1; i >= 0; i--) { k = sessionStorage.key(i); if (k && k.indexOf('msal.') === 0) { sessionStorage.removeItem(k); } } } catch (e) {} }
+  function login() {
+    function go() { return app.loginRedirect({ scopes: SCOPES, prompt: 'select_account' }); }
+    return Promise.resolve().then(go).catch(function (e) {
+      if (e && e.errorCode === 'interaction_in_progress') { clearStuck(); return go(); }  // a sign-in that was interrupted earlier
+      throw e;
+    });
+  }
   function logout() { return app.logoutRedirect({ account: account }); }
   function token(scopes) {
     scopes = scopes || SCOPES;
@@ -2882,7 +2889,7 @@ function loginScreen(msg) {
     '<div style="font-size:12px;color:var(--mute2);border-top:1px solid var(--line2);padding-top:12px;line-height:1.5">Works on PC, iPad, tablet and phone. Microsoft handles your password — this app never sees it.</div></div>' +
     (msg ? '<div class="bad-box" role="alert">' + msg + '</div>' : '') +
     '<div style="text-align:center;font-size:12px;color:var(--mute2)">Trouble signing in? <a href="mailto:hr@edgelinkinc.com">hr@edgelinkinc.com</a></div></div></section></div>');
-  byId('signin').onclick = function () { AUTH.login(); };
+  byId('signin').onclick = function () { AUTH.login().catch(function (e) { loginScreen('Sign-in didn’t start: ' + ((e && (e.errorMessage || e.message)) || 'unknown error') + ' — reload and try again.'); }); };
 }
 function messageScreen(title, body, actions) {
   screen('<div class="login"><section class="r2" style="flex-basis:100%"><div class="card" style="max-width:520px;padding:28px;border-radius:14px;display:flex;flex-direction:column;gap:12px"><h2 style="margin:0;color:var(--plum)">' + esc(title) + '</h2><div style="line-height:1.55">' + body + '</div><div style="display:flex;gap:8px;flex-wrap:wrap">' + (actions || '') +
