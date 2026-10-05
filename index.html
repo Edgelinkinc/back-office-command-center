@@ -1215,7 +1215,12 @@ document.addEventListener('focusout', function () { setTimeout(function () { if 
 /* A person's own routine checklist is seen only by them and the people they report to (up to the CEO); peers don't see it. Department routines, calls and blocks stay visible. */
 function tplOwner(id) { for (var i = 0; i < S.templates.length; i++) { if (S.templates[i].TemplateId === id) { return S.templates[i].OwnerEmail || ''; } } return ''; }
 function isAbove(me, email) { var p = personBy(email), n = 0; while (p && p.ReportsTo && n++ < 20) { if (p.ReportsTo === lc(me)) { return true; } p = personBy(p.ReportsTo); } return false; }
-function hiddenFromMe(t) { return !!t && t.OwnerEmail !== S.myEmail && !isAbove(S.myEmail, t.OwnerEmail) && !!t.TemplateId && (t.Kind || 'Task') === 'Task' && tplOwner(t.TemplateId).indexOf('dept:') !== 0; }
+/* Departments: you see your own department's work (execs and managers up the chain see more). Everyone else = calendar only (calls and blocks). */
+function fullView(email) { email = lc(email); if (!email || email === S.myEmail || isExec()) { return true; } var d = deptOf(S.myEmail); return (!!d && lc(deptOf(email)) === lc(d)) || isAbove(S.myEmail, email); }
+function teamPeople() { return activePeople().filter(function (p) { return fullView(p.Email); }); }
+function hiddenFromMe(t) {
+  if (t && t.OwnerEmail !== S.myEmail && (t.Kind || 'Task') === 'Task' && t.AssignedByEmail !== S.myEmail && !fullView(t.OwnerEmail)) { return true; }
+  return !!t && t.OwnerEmail !== S.myEmail && !isAbove(S.myEmail, t.OwnerEmail) && !!t.TemplateId && (t.Kind || 'Task') === 'Task' && tplOwner(t.TemplateId).indexOf('dept:') !== 0; }
 function tasksOf(email) { var out = [], k; for (k in S.tasks) { if (S.tasks.hasOwnProperty(k) && S.tasks[k].OwnerEmail === lc(email) && !hiddenFromMe(S.tasks[k])) { out.push(S.tasks[k]); } } return out; }
 function allTasks() { var out = [], k; for (k in S.tasks) { if (S.tasks.hasOwnProperty(k) && !hiddenFromMe(S.tasks[k])) { out.push(S.tasks[k]); } } return out; }
 function templatesOf(email) { return S.templates.filter(function (t) { return t.OwnerEmail === lc(email) && t.Active !== false; }); }
@@ -1286,6 +1291,7 @@ function asRuleTpl(t) {
 }
 function templatesForRules(email) {
   var l = routineTemplatesOf(email);
+  if (!fullView(email)) { l = l.filter(function (t) { return (t.Kind || 'Task') !== 'Task'; }); }
   if (lc(email) !== S.myEmail && !isAbove(S.myEmail, email)) { l = l.filter(function (t) { return (t.Kind || 'Task') !== 'Task' || String(t.OwnerEmail).indexOf('dept:') === 0; }); }
   return l.map(function (t) { var o = asRuleTpl(t); if (String(t.OwnerEmail).indexOf('dept:') === 0) { o.OwnerEmail = lc(email); } return o; });
 }
@@ -1333,7 +1339,7 @@ function header() {
     '<button class="ib" data-act="next" aria-label="Next">›</button><button class="tb hidem" data-act="gotoday">Today</button></div>' : '';
   var viewing = (S.view === 'today' || S.view === 'week') ?
     '<label class="sr" for="viewing">Whose day</label><select id="viewing" class="tb hidem" data-act="viewing">' +
-    activePeople().map(function (p) { return opt(p.Email, S.viewing, p.Email === S.myEmail ? 'My day' : p.Title); }).join('') + '</select>' : '';
+    teamPeople().concat(personBy(S.viewing) && !fullView(S.viewing) ? [personBy(S.viewing)] : []).map(function (p) { return opt(p.Email, S.viewing, p.Email === S.myEmail ? 'My day' : p.Title + (fullView(p.Email) ? '' : ' (calendar)')); }).join('') + '</select>' : '';
   return '<header class="top"><button class="ib mobonly" data-act="navtoggle" aria-label="Menu">' + '≡' + '</button>' +
     '<a class="logo" href="#" data-act="gotoday"><span class="dia"></span>' + esc(CONFIG.appName) + '</a>' + dayNav + viewing +
     '<div class="search hidem"><label class="sr" for="search">Search</label><input id="search" placeholder="Search tasks, notes, people, stores…" value="' + esc(S.search) + '" data-act="search" autocomplete="off"></div>' +
@@ -1552,8 +1558,11 @@ function weekView() {
 
 /* ================= team ================= */
 function teamView() {
-  var depts = departments(), fd = S.teamDept || '';
-  var people = activePeople().filter(function (p) { return !fd || lc(p.Department || '') === lc(fd); }), sel = S.teamSel || (people[0] && people[0].Email);
+  var depts = isExec() ? departments() : [], fd = S.teamDept || '';
+  var people = teamPeople().filter(function (p) { return !fd || lc(p.Department || '') === lc(fd); }), sel = S.teamSel || (people[0] && people[0].Email);
+  var others = activePeople().filter(function (p) { return !fullView(p.Email); });
+  var cal = others.length ? '<section class="card" style="margin-top:10px" aria-label="Calendars"><div class="gh">Calendars <span>Other departments</span></div><div style="padding:6px">' +
+    others.map(function (p) { return '<button class="node' + (sel === p.Email ? ' on' : '') + '" data-act="teamsel" data-email="' + esc(p.Email) + '"><div class="av">' + esc(initials(p.Title)) + '</div><div class="nm"><b>' + esc(p.Title) + '</b><i>' + esc([p.JobTitle, p.Department].filter(Boolean).join(' · ')) + '</i></div>' + chip('Calendar', 'gry') + '</button>'; }).join('') + '</div></section>' : '';
   var inSet = {}; people.forEach(function (p) { inSet[p.Email] = 1; });
   var roots = people.filter(function (p) { return !p.ReportsTo || !inSet[p.ReportsTo]; });
   var filt = depts.length > 1 ? '<div class="opts" style="padding:6px 6px 0;flex-wrap:wrap">' + [''].concat(depts).map(function (x) { return '<button class="btn xs' + (lc(x) === lc(fd) ? ' p' : '') + '" data-act="teamdept" data-v="' + esc(x) + '">' + esc(x || 'All') + '</button>'; }).join('') + '</div>' : '';
@@ -1583,12 +1592,12 @@ function teamView() {
   }).join('');
   var selP = personBy(sel);
   var detail = selP ? '<div class="card" style="padding:10px 12px;display:flex;flex-wrap:wrap;gap:8px;justify-content:space-between;align-items:center"><div><div class="meta" style="font-weight:700">' +
-    esc([selP.JobTitle, selP.Department].filter(Boolean).join(' · ') + (selP.ReportsTo ? ' · reports to ' + nameOf(selP.ReportsTo) : '')) + '</div><div style="font-size:18px;font-weight:700;color:var(--plum)">' + esc(selP.Title) + '</div></div>' +
+    esc([selP.JobTitle, selP.Department].filter(Boolean).join(' · ') + (selP.ReportsTo ? ' · reports to ' + nameOf(selP.ReportsTo) : '')) + '</div><div style="font-size:18px;font-weight:700;color:var(--plum)">' + esc(selP.Title) + (fullView(selP.Email) ? '' : ' ' + chip('Calendar only', 'gry')) + '</div></div>' +
     '<div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn sm" data-act="viewweek" data-email="' + esc(selP.Email) + '">Their week</button>' +
     (selP.Email !== S.myEmail ? '<button class="btn sm p" data-act="newtask" data-owner="' + esc(selP.Email) + '">Assign to ' + esc(firstName(selP.Email)) + '</button>' : '') + '</div></div>' +
     dayView(selP.Email, S.today) : '<div class="empty">Pick someone.</div>';
-  return '<div class="cols"><section class="card" style="flex:1 1 260px;max-width:320px" aria-label="Org chart"><div class="gh">Team · ' + esc(R.fmtShort(S.today)) + ' <span>Org chart</span></div>' + filt + '<div style="padding:6px">' +
-    (roots.length ? roots.map(node).join('') : '<div class="empty">No team members yet. An admin adds people in Settings.</div>') + '</div></section>' +
+  return '<div class="cols"><div style="flex:1 1 260px;max-width:320px;min-width:0"><section class="card" aria-label="Org chart"><div class="gh">Team · ' + esc(R.fmtShort(S.today)) + ' <span>Org chart</span></div>' + filt + '<div style="padding:6px">' +
+    (roots.length ? roots.map(node).join('') : '<div class="empty">No team members yet. An admin adds people in Settings.</div>') + '</div></section>' + cal + '</div>' +
     '<div class="colL">' + rollups + detail + '</div></div>';
 }
 
@@ -1824,6 +1833,7 @@ function filteredNotes() {
   var F = S.logF || (S.logF = { q: '', person: '', role: '', store: '', from: '', to: '', show: 'all', archived: false });
   return S.notes.concat(S.shared).filter(function (n) {
     if (!F.archived && n.Archived) { return false; }
+    if (!fullView(n.OwnerEmail)) { return false; }
     if (F.show === 'mine' && n.OwnerEmail !== S.myEmail) { return false; }
     if (F.show === 'shared' && n.Visibility !== 'Shared') { return false; }
     if (F.from && n.ConvDate < F.from) { return false; }
