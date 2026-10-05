@@ -583,8 +583,8 @@ var BOCCSchema = (function () {
   // security: 'team' = all members read/write; 'own' = item-level read/edit own only;
   // 'restricted' = broken inheritance, only listed people.
   var lists = [
-    { title: 'BOCC_People', security: 'team', fields: [T('Email', { indexed: true, unique: true }), T('JobTitle'), T('ReportsTo'), T('Access'), T('Raises'), B('Active'), Num('SortOrder')] },
-    { title: 'BOCC_Prefs', security: 'team', fields: [T('Email', { indexed: true, unique: true }), T('WorkDays'), T('DayStart'), T('DayEnd'), N('TimeOff'), N('DayThemes'), N('Categories'), T('DefaultVisibility')] },
+    { title: 'BOCC_People', security: 'team', fields: [T('Email', { indexed: true, unique: true }), T('JobTitle'), T('ReportsTo'), T('Department'), T('Access'), T('Raises'), B('Active'), Num('SortOrder')] },
+    { title: 'BOCC_Prefs', security: 'team', fields: [T('Email', { indexed: true, unique: true }), T('WorkDays'), T('DayStart'), T('DayEnd'), N('TimeOff'), N('DayThemes'), N('Categories'), T('DefaultVisibility'), N('HiddenTpls')] },
     { title: 'BOCC_Tasks', security: 'team', versioning: true, fields: [
       T('TaskKey', { indexed: true, unique: true }), T('OwnerEmail', { indexed: true }), T('AssignedByEmail'), T('Category'), T('Kind'), T('Priority'),
       T('Status', { indexed: true }), T('PlannedDate', { indexed: true }), T('OriginalPlannedDate'), T('DueDate'), T('StartTime'), Num('DurationMin'),
@@ -594,7 +594,7 @@ var BOCCSchema = (function () {
     { title: 'BOCC_Private', security: 'own', fields: [T('Key', { indexed: true, unique: true }), T('OwnerEmail'), T('RealTitle'), N('Details')] },
     { title: 'BOCC_Templates', security: 'team', fields: [
       T('TemplateId', { indexed: true, unique: true }), T('OwnerEmail', { indexed: true }), T('Kind'), T('Category'), T('Days'), T('StartTime'), Num('DurationMin'),
-      T('AfterLabel'), T('Rollover'), T('Cycle'), N('Items'), T('StartDate'), T('EndDate'), N('Skips'), B('Active'), B('Private'), T('PublicLabel'), T('Priority'), Num('SortOrder')] },
+      T('AfterLabel'), T('Rollover'), T('Cycle'), N('Items'), T('StartDate'), T('EndDate'), N('Skips'), B('Active'), B('Private'), T('PublicLabel'), T('Priority'), Num('SortOrder'), T('Department')] },
     { title: 'BOCC_Notes', security: 'own', fields: noteFields() },
     { title: 'BOCC_SharedNotes', security: 'team', fields: noteFields() },
     { title: 'BOCC_DayNotes', security: 'own', fields: [T('Key', { indexed: true, unique: true }), T('OwnerEmail'), T('Day'), N('Text')] },
@@ -951,7 +951,7 @@ var AUTH = (function () {
 }());
 
 /* ---------------- store ---------------- */
-var JSON_FIELDS = { Subtasks: [], WithPeople: [], SendBack: [], Comments: [], Items: [], Skips: [], People: [], TimeOff: [], DayThemes: {}, Categories: [], History: [] };
+var JSON_FIELDS = { Subtasks: [], WithPeople: [], SendBack: [], Comments: [], Items: [], Skips: [], People: [], TimeOff: [], DayThemes: {}, Categories: [], History: [], HiddenTpls: [] };
 var NUM_FIELDS = { DurationMin: 1, SortOrder: 1 };
 var BOOL_FIELDS = { Active: 1, Archived: 1, WantsFollowUp: 1, Private: 1, SeenByOwner: 1 };
 function fromSP(row) {
@@ -999,7 +999,7 @@ var S = {
 function personBy(email) { email = lc(email); for (var i = 0; i < S.people.length; i++) { if (S.people[i].Email === email) { return S.people[i]; } } return null; }
 function nameOf(email) { var p = personBy(email); return p ? p.Title : (email || ''); }
 function firstName(email) { return String(nameOf(email)).split(' ')[0]; }
-function prefsOf(email) { return S.prefs[lc(email)] || { WorkDays: R.DEFAULT_WORKDAYS, TimeOff: [], DayThemes: {}, Categories: [] }; }
+function prefsOf(email) { return S.prefs[lc(email)] || { WorkDays: R.DEFAULT_WORKDAYS, TimeOff: [], DayThemes: {}, Categories: [], HiddenTpls: [] }; }
 function workOf(email) { var p = prefsOf(email); return { days: p.WorkDays || R.DEFAULT_WORKDAYS, off: p.TimeOff || [] }; }
 function activePeople() { return S.people.filter(function (p) { return p.Active !== false; }).sort(function (a, b) { return (a.SortOrder || 99) - (b.SortOrder || 99) || (a.Title < b.Title ? -1 : 1); }); }
 function reportsOf(email, deep) {
@@ -1028,6 +1028,7 @@ function myCategories() {
   var p = prefsOf(S.myEmail), list = (p.Categories || []).slice(), seen = {};
   list.forEach(function (c) { seen[c] = 1; });
   Object.keys(S.tasks).forEach(function (id) { var t = S.tasks[id]; if (t.OwnerEmail === S.myEmail && t.Category && !seen[t.Category]) { seen[t.Category] = 1; list.push(t.Category); } });
+  deptTemplates(S.deptSel || deptOf(S.myEmail)).concat(deptTemplates(deptOf(S.myEmail))).forEach(function (t) { if (t.Category && !seen[t.Category]) { seen[t.Category] = 1; list.push(t.Category); } });
   return list;
 }
 
@@ -1201,9 +1202,20 @@ function softRender() {
 document.addEventListener('focusout', function () { setTimeout(function () { if (renderDeferred) { var a = document.activeElement; if (!a || !/INPUT|TEXTAREA|SELECT/.test(a.tagName)) { renderDeferred = false; render(); } } }, 150); });
 
 /* ---------------- recurrence materialization ---------------- */
-function tasksOf(email) { var out = [], k; for (k in S.tasks) { if (S.tasks.hasOwnProperty(k) && S.tasks[k].OwnerEmail === lc(email)) { out.push(S.tasks[k]); } } return out; }
-function allTasks() { var out = [], k; for (k in S.tasks) { if (S.tasks.hasOwnProperty(k)) { out.push(S.tasks[k]); } } return out; }
+/* A person's own routine checklist is theirs alone: nobody else sees those tasks. Department routines, calls and blocks stay visible. */
+function tplOwner(id) { for (var i = 0; i < S.templates.length; i++) { if (S.templates[i].TemplateId === id) { return S.templates[i].OwnerEmail || ''; } } return ''; }
+function hiddenFromMe(t) { return !!t && t.OwnerEmail !== S.myEmail && !!t.TemplateId && (t.Kind || 'Task') === 'Task' && tplOwner(t.TemplateId).indexOf('dept:') !== 0; }
+function tasksOf(email) { var out = [], k; for (k in S.tasks) { if (S.tasks.hasOwnProperty(k) && S.tasks[k].OwnerEmail === lc(email) && !hiddenFromMe(S.tasks[k])) { out.push(S.tasks[k]); } } return out; }
+function allTasks() { var out = [], k; for (k in S.tasks) { if (S.tasks.hasOwnProperty(k) && !hiddenFromMe(S.tasks[k])) { out.push(S.tasks[k]); } } return out; }
 function templatesOf(email) { return S.templates.filter(function (t) { return t.OwnerEmail === lc(email) && t.Active !== false; }); }
+/* departments: a department routine is a template owned by 'dept:<name>'; everyone in that department gets it */
+function deptKey(d) { return 'dept:' + lc(String(d || '').trim()); }
+function deptOf(email) { var p = personBy(email); return p && p.Department ? String(p.Department).trim() : ''; }
+function departments() { var seen = {}, out = []; S.people.forEach(function (p) { var d = String(p.Department || '').trim(); if (d && p.Active !== false && !seen[lc(d)]) { seen[lc(d)] = 1; out.push(d); } }); return out.sort(); }
+function deptTemplates(dept, all) { var k = deptKey(dept); return dept ? S.templates.filter(function (t) { return t.OwnerEmail === k && (all || t.Active !== false); }) : []; }
+function hiddenFor(email) { return prefsOf(email).HiddenTpls || []; }
+function routineTemplatesOf(email) { var hid = hiddenFor(email); return templatesOf(email).concat(deptTemplates(deptOf(email)).filter(function (t) { return hid.indexOf(t.TemplateId) < 0; })); }
+function canEditDept(dept) { return !!dept && (isExec() || S.admin || lc(deptOf(S.myEmail)) === lc(dept)); }
 var materializing = false;
 function materialize() {
   if (materializing || !S.me) { return Promise.resolve(); }
@@ -1260,7 +1272,11 @@ function asRuleTpl(t) {
   if (t.Private) { var pv = S.privateMap['tpl|' + t.TemplateId]; o.Title = (t.OwnerEmail === S.myEmail && pv && pv.RealTitle) || t.PublicLabel || 'Private'; }
   return o;
 }
-function templatesForRules(email) { return templatesOf(email).map(asRuleTpl); }
+function templatesForRules(email) {
+  var l = routineTemplatesOf(email);
+  if (lc(email) !== S.myEmail) { l = l.filter(function (t) { return (t.Kind || 'Task') !== 'Task' || String(t.OwnerEmail).indexOf('dept:') === 0; }); }
+  return l.map(function (t) { var o = asRuleTpl(t); if (String(t.OwnerEmail).indexOf('dept:') === 0) { o.OwnerEmail = lc(email); } return o; });
+}
 
 /* Views: everything the person sees. HTML strings, every user value passed through esc(). ES5. */
 var ICON = {
@@ -1524,15 +1540,18 @@ function weekView() {
 
 /* ================= team ================= */
 function teamView() {
-  var people = activePeople(), sel = S.teamSel || (people[0] && people[0].Email);
-  var roots = people.filter(function (p) { return !p.ReportsTo || !personBy(p.ReportsTo); });
+  var depts = departments(), fd = S.teamDept || '';
+  var people = activePeople().filter(function (p) { return !fd || lc(p.Department || '') === lc(fd); }), sel = S.teamSel || (people[0] && people[0].Email);
+  var inSet = {}; people.forEach(function (p) { inSet[p.Email] = 1; });
+  var roots = people.filter(function (p) { return !p.ReportsTo || !inSet[p.ReportsTo]; });
+  var filt = depts.length > 1 ? '<div class="opts" style="padding:6px 6px 0;flex-wrap:wrap">' + [''].concat(depts).map(function (x) { return '<button class="btn xs' + (lc(x) === lc(fd) ? ' p' : '') + '" data-act="teamdept" data-v="' + esc(x) + '">' + esc(x || 'All') + '</button>'; }).join('') + '</div>' : '';
   function node(p) {
     var open = tasksOf(p.Email).filter(function (t) { return R.isOpen(t) && R.showsOnDay(t, S.today, S.today, workOf(p.Email)); }).length;
     var late = tasksOf(p.Email).filter(function (t) { return R.isOverdue(t, S.today); }).length;
     var off = !R.isWorkDay(workOf(p.Email), S.today);
     var kids = people.filter(function (k) { return k.ReportsTo === p.Email; });
     return '<button class="node' + (sel === p.Email ? ' on' : '') + '" data-act="teamsel" data-email="' + esc(p.Email) + '"><div class="av"' + (p.Access === 'Executive' ? ' style="background:var(--plum);color:#fff"' : '') + '>' + esc(initials(p.Title)) + '</div>' +
-      '<div class="nm"><b>' + esc(p.Title) + (p.Email === S.myEmail ? ' (me)' : '') + '</b><i>' + esc((p.JobTitle || '') + ' · ' + (p.Access || 'Member')) + '</i></div>' +
+      '<div class="nm"><b>' + esc(p.Title) + (p.Email === S.myEmail ? ' (me)' : '') + '</b><i>' + esc([p.JobTitle, p.Department].filter(Boolean).join(' · ') || (p.Access || 'Member')) + '</i></div>' +
       (off ? chip('Off', 'gry') : late ? chip(late + ' late', 'red') : chip(String(open))) + '</button>' +
       (kids.length ? '<div class="br">' + kids.map(node).join('') + '</div>' : '');
   }
@@ -1552,11 +1571,11 @@ function teamView() {
   }).join('');
   var selP = personBy(sel);
   var detail = selP ? '<div class="card" style="padding:10px 12px;display:flex;flex-wrap:wrap;gap:8px;justify-content:space-between;align-items:center"><div><div class="meta" style="font-weight:700">' +
-    esc((selP.JobTitle || '') + (selP.ReportsTo ? ' · reports to ' + nameOf(selP.ReportsTo) : '')) + '</div><div style="font-size:18px;font-weight:700;color:var(--plum)">' + esc(selP.Title) + '</div></div>' +
+    esc([selP.JobTitle, selP.Department].filter(Boolean).join(' · ') + (selP.ReportsTo ? ' · reports to ' + nameOf(selP.ReportsTo) : '')) + '</div><div style="font-size:18px;font-weight:700;color:var(--plum)">' + esc(selP.Title) + '</div></div>' +
     '<div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn sm" data-act="viewweek" data-email="' + esc(selP.Email) + '">Their week</button>' +
     (selP.Email !== S.myEmail ? '<button class="btn sm p" data-act="newtask" data-owner="' + esc(selP.Email) + '">Assign to ' + esc(firstName(selP.Email)) + '</button>' : '') + '</div></div>' +
     dayView(selP.Email, S.today) : '<div class="empty">Pick someone.</div>';
-  return '<div class="cols"><section class="card" style="flex:1 1 260px;max-width:320px" aria-label="Org chart"><div class="gh">Team · ' + esc(R.fmtShort(S.today)) + ' <span>Org chart</span></div><div style="padding:6px">' +
+  return '<div class="cols"><section class="card" style="flex:1 1 260px;max-width:320px" aria-label="Org chart"><div class="gh">Team · ' + esc(R.fmtShort(S.today)) + ' <span>Org chart</span></div>' + filt + '<div style="padding:6px">' +
     (roots.length ? roots.map(node).join('') : '<div class="empty">No team members yet. An admin adds people in Settings.</div>') + '</div></section>' +
     '<div class="colL">' + rollups + detail + '</div></div>';
 }
@@ -1902,9 +1921,28 @@ function settingsView() {
     '<section class="card"><div class="gh">My routines <span><button class="btn xs p" data-act="newroutine">+ Add routine</button> <label class="btn xs" style="cursor:pointer">Import JSON<input type="file" accept=".json" data-act="importroutines" class="sr"></label></span></div><div class="scrollx"><table class="tbl" style="min-width:860px"><thead><tr><th>Routine</th><th>Type</th><th>Days</th><th>Time</th><th>Length</th><th>If missed / unfinished</th><th></th></tr></thead><tbody>' +
     (rt || '<tr><td colspan="7" class="meta">No routines yet. Add the things you do every day or week.</td></tr>') + '</tbody></table></div>' +
     (stopped.length ? '<div class="meta" style="padding:8px 12px">Stopped (history kept): ' + stopped.map(function (t) { return esc(asRuleTpl(t).Title); }).join(', ') + '</div>' : '') + '</section>' +
-    contactsCard() + (S.admin ? teamCard() : '') +
+    deptCard() + contactsCard() + (S.admin ? teamCard() : '') +
     '<section class="card"><div class="gh">Backup</div><div style="padding:12px;display:flex;flex-wrap:wrap;gap:8px;align-items:center"><button class="btn sm" data-act="backup" data-v="json">Export everything (JSON)</button><button class="btn sm" data-act="backup" data-v="tasks">Tasks (CSV)</button><button class="btn sm" data-act="exportnotes" data-v="csv">Notes (CSV)</button><span class="meta">Includes history and original dates.</span></div></section></div>';
   return html;
+}
+function deptCard() {
+  var mine = deptOf(S.myEmail), all = departments(), d = S.deptSel || mine || (isExec() || S.admin ? all[0] : '') || '';
+  var canPick = isExec() || S.admin, edit = canEditDept(d), hid = hiddenFor(S.myEmail), inDept = d && lc(d) === lc(mine);
+  var tps = deptTemplates(d).slice().sort(function (a, b) { return (a.SortOrder || 99) - (b.SortOrder || 99); });
+  var members = activePeople().filter(function (p) { return d && lc(p.Department || '') === lc(d); });
+  var pick = canPick && all.length ? '<label class="sr" for="dept-sel">Department</label><select id="dept-sel" class="in" style="width:auto;height:26px;padding:0 6px" data-act="deptsel">' + all.map(function (x) { return opt(x, d, x + (lc(x) === lc(mine) ? ' (mine)' : '')); }).join('') + '</select> ' : '';
+  var rows = tps.map(function (t) {
+    var off = hid.indexOf(t.TemplateId) >= 0;
+    return '<tr' + (off ? ' style="opacity:.55"' : '') + '><td><b>' + esc(t.Title) + '</b><div class="meta">' + esc(t.Category || '') + '</div></td><td>' + chip(t.Kind === 'Call' ? 'Call' : t.Kind === 'Block' ? 'Work block' : 'Task group', t.Kind === 'Call' ? 'plum' : t.Kind === 'Block' ? '' : 'blu') + '</td>' +
+      '<td>' + esc(R.DOW.filter(function (x, i) { return (t.Days || '').charAt(i) === '1'; }).join(', ')) + '</td><td>' + (t.StartTime ? esc(R.fmtTime(t.StartTime)) : esc(t.AfterLabel || '—')) + '</td>' +
+      '<td style="white-space:nowrap">' + (inDept ? '<button class="btn xs" data-act="depthide" data-id="' + esc(t.TemplateId) + '">' + (off ? 'Turn on for me' : 'Not for me') + '</button> ' : '') +
+      (edit ? '<button class="btn xs" data-act="editroutine" data-id="' + esc(t._id) + '">Edit</button> <button class="btn xs r" data-act="stoproutine" data-id="' + esc(t._id) + '">Stop</button>' : '') + '</td></tr>';
+  }).join('');
+  var head = '<div class="gh">' + (d ? esc(d) + ' department routines' : 'Department routines') + ' <span>' + pick + (edit ? '<button class="btn xs p" data-act="newdeptroutine" data-v="' + esc(d) + '">+ Add department routine</button>' : '') + '</span></div>';
+  if (!d) { return '<section class="card">' + head + '<div class="meta" style="padding:10px 12px;white-space:normal">You’re not in a department yet. An admin sets it in Settings → Team &amp; access → Edit.</div></section>'; }
+  return '<section class="card">' + head + '<div class="meta" style="padding:8px 12px 0;white-space:normal">Everyone in ' + esc(d) + ' gets these on their day automatically' + (members.length ? ' — ' + esc(members.map(function (p) { return p.Title; }).join(', ')) : '') + '. Changes reach everyone from today forward.</div>' +
+    '<div class="scrollx"><table class="tbl" style="min-width:640px"><thead><tr><th>Routine</th><th>Type</th><th>Days</th><th>Time</th><th></th></tr></thead><tbody>' +
+    (rows || '<tr><td colspan="5" class="meta">No ' + esc(d) + ' routines yet.' + (edit ? ' Add the tasks everyone in ' + esc(d) + ' does.' : '') + '</td></tr>') + '</tbody></table></div></section>';
 }
 function contactsCard() {
   var q = lc(S.contactQ || '');
@@ -1918,14 +1956,15 @@ function contactsCard() {
     (list.length ? '' : '<tr><td colspan="7" class="meta">No contacts yet.</td></tr>') + '</tbody></table></div></section>';
 }
 function teamCard() {
-  return '<section class="card"><div class="gh">Team &amp; access <span>Admin only · <button class="btn xs p" data-act="newperson">+ Add team member</button></span></div><div class="scrollx"><table class="tbl"><thead><tr><th>Person</th><th>Reports to</th><th>Access</th><th>Raises</th><th>Active</th><th></th></tr></thead><tbody>' +
+  return '<section class="card"><div class="gh">Team &amp; access <span>Admin only · <button class="btn xs p" data-act="newperson">+ Add team member</button></span></div><div class="scrollx"><table class="tbl"><thead><tr><th>Person</th><th>Department</th><th>Reports to</th><th>Access</th><th>Raises</th><th>Active</th><th></th></tr></thead><tbody>' +
     S.people.slice().sort(function (a, b) { return ((a.Active === false) - (b.Active === false)) || (a.SortOrder || 99) - (b.SortOrder || 99); }).map(function (p) {
-      return '<tr><td><b>' + esc(p.Title) + '</b><div class="meta">' + esc(p.JobTitle) + ' · ' + esc(p.Email) + '</div></td><td>' + esc(p.ReportsTo ? nameOf(p.ReportsTo) : '—') + '</td><td>' + chip(p.Access || 'Member', p.Access === 'Executive' ? 'plum' : p.Access === 'Manager' ? 'blu' : '') + '</td><td>' + esc(p.Raises || '—') + '</td><td>' + (p.Active === false ? chip('Left the team', 'gry') : 'Yes') + '</td><td><button class="btn xs" data-act="editperson" data-id="' + esc(p._id) + '">Edit</button></td></tr>';
+      return '<tr><td><b>' + esc(p.Title) + '</b><div class="meta">' + esc(p.JobTitle) + ' · ' + esc(p.Email) + '</div></td><td>' + esc(p.Department || '—') + '</td><td>' + esc(p.ReportsTo ? nameOf(p.ReportsTo) : '—') + '</td><td>' + chip(p.Access || 'Member', p.Access === 'Executive' ? 'plum' : p.Access === 'Manager' ? 'blu' : '') + '</td><td>' + esc(p.Raises || '—') + '</td><td>' + (p.Active === false ? chip('Left the team', 'gry') : 'Yes') + '</td><td><button class="btn xs" data-act="editperson" data-id="' + esc(p._id) + '">Edit</button></td></tr>';
     }).join('') + '</tbody></table></div><div class="meta" style="padding:8px 12px">Adding someone gives them site access automatically. To remove someone who left, click Edit → Remove from team.</div></section>';
 }
 function routineModal(m) {
   var f = m.f;
-  return '<div class="modal" role="dialog" aria-label="Routine"><div class="mhd"><h2>' + (m.editId ? 'Edit Routine' : 'Add Routine') + '</h2></div><div class="mbody" id="mbody"><div class="fgrid">' +
+  var dept = m.owner && m.owner.indexOf('dept:') === 0 ? m.dept : '';
+  return '<div class="modal" role="dialog" aria-label="Routine"><div class="mhd"><h2>' + (m.editId ? 'Edit ' : 'Add ') + (dept ? esc(dept) + ' Routine' : 'Routine') + '</h2></div><div class="mbody" id="mbody"><div class="fgrid">' +
     '<div class="fld spanall"><label for="rt-t">Title *</label><input id="rt-t" class="in' + (m.err && !f.Title ? ' bad' : '') + '" data-tf="Title" value="' + esc(f.Title) + '"></div>' +
     '<div class="fld"><label for="rt-k">Type</label><select id="rt-k" class="in" data-tf="Kind">' + opt('Task', f.Kind, 'Task group (checklist)') + opt('Call', f.Kind, 'Call / meeting') + opt('Block', f.Kind, 'Work block') + '</select></div>' +
     '<div class="fld"><label for="rt-c">Category</label><input id="rt-c" class="in" list="catlist3" data-tf="Category" value="' + esc(f.Category) + '"><datalist id="catlist3">' + myCategories().map(function (c) { return '<option value="' + esc(c) + '">'; }).join('') + '</datalist></div>' +
@@ -1938,7 +1977,7 @@ function routineModal(m) {
     '<div class="fld"><label for="rt-sd">Starts</label><input type="date" id="rt-sd" class="in" data-tf="StartDate" value="' + esc(f.StartDate) + '"></div>' +
     '<div class="fld"><label for="rt-ed">Ends (optional)</label><input type="date" id="rt-ed" class="in" data-tf="EndDate" value="' + esc(f.EndDate) + '"></div>' +
     (f.Kind === 'Task' ? '<div class="fld spanall"><label for="rt-items">Checklist — one per line. Start a line with “- ” for a sub-item, “-- ” for a third level, end with “ *” if required.</label><textarea id="rt-items" class="in" rows="7" data-tf="itemsText">' + esc(f.itemsText) + '</textarea></div>' : '') +
-    '<div class="spanall"><label style="display:flex;gap:8px;align-items:center;font-weight:700;color:var(--plum)"><input type="checkbox" data-tf="Private"' + (f.Private ? ' checked' : '') + '> Private routine</label>' + (f.Private ? '<div class="fld" style="margin-top:6px;max-width:300px"><label for="rt-pl">What the team sees</label><select id="rt-pl" class="in" data-tf="PublicLabel">' + opts(['Private', 'Confidential HR', 'Personal appt', 'Busy'], f.PublicLabel) + '</select></div>' : '') + '</div>' +
+    (dept ? '<div class="spanall meta" style="white-space:normal">Everyone in ' + esc(dept) + ' gets this on their own day.</div>' : '<div class="spanall"><label style="display:flex;gap:8px;align-items:center;font-weight:700;color:var(--plum)"><input type="checkbox" data-tf="Private"' + (f.Private ? ' checked' : '') + '> Private routine</label>' + (f.Private ? '<div class="fld" style="margin-top:6px;max-width:300px"><label for="rt-pl">What the team sees</label><select id="rt-pl" class="in" data-tf="PublicLabel">' + opts(['Private', 'Confidential HR', 'Personal appt', 'Busy'], f.PublicLabel) + '</select></div>' : '') + '</div>') +
     '</div>' + (m.err ? '<div class="err" style="margin-top:8px">' + esc(m.err) + '</div>' : '') + '<div class="meta" style="margin-top:8px">Changes apply from today forward. Items already on past days keep what they were.</div></div>' +
     '<div class="dft" style="justify-content:flex-end"><button class="btn sm" data-act="closemodal">Cancel</button><button class="btn sm p" data-act="saveroutine">Save routine</button></div></div>';
 }
@@ -1948,6 +1987,7 @@ function personModal(m) {
     '<div class="fld spanall"><label for="pp-n">Name *</label><input id="pp-n" class="in" data-pmf="Title" value="' + esc(f.Title) + '"></div>' +
     '<div class="fld spanall"><label for="pp-e">Microsoft email *</label><input id="pp-e" class="in" type="email" data-pmf="Email" value="' + esc(f.Email) + '"' + (m.editId ? ' readonly' : '') + '></div>' +
     '<div class="fld"><label for="pp-j">Job title</label><input id="pp-j" class="in" data-pmf="JobTitle" value="' + esc(f.JobTitle) + '"></div>' +
+    '<div class="fld"><label for="pp-d">Department</label><input id="pp-d" class="in" list="deptlist" data-pmf="Department" value="' + esc(f.Department) + '" placeholder="e.g. HR, Operations, Payroll"><datalist id="deptlist">' + departments().map(function (x) { return '<option value="' + esc(x) + '">'; }).join('') + '</datalist></div>' +
     '<div class="fld"><label for="pp-r">Reports to</label><select id="pp-r" class="in" data-pmf="ReportsTo">' + opt('', f.ReportsTo, '— nobody —') + activePeople().filter(function (p) { return p.Email !== f.Email; }).map(function (p) { return opt(p.Email, f.ReportsTo, p.Title); }).join('') + '</select></div>' +
     '<div class="fld"><label for="pp-a">Access</label><select id="pp-a" class="in" data-pmf="Access">' + opts(['Member', 'Manager', 'Executive'], f.Access || 'Member') + '</select></div>' +
     '<div class="fld"><label for="pp-x">Raise requests</label><select id="pp-x" class="in" data-pmf="Raises">' + opt('', f.Raises, 'None') + opt('Submit', f.Raises) + opt('Approve', f.Raises) + '</select></div>' +
@@ -2323,11 +2363,12 @@ function textToTree(text) {
   });
   return root;
 }
-function routineModal0(t) {
+function routineModal0(t, owner) {
   var f = t ? { Title: asRuleTpl(t).Title, Kind: t.Kind || 'Task', Category: t.Category, Days: t.Days || R.DEFAULT_WORKDAYS, StartTime: t.StartTime, DurationMin: t.DurationMin === null ? '' : t.DurationMin,
     AfterLabel: t.AfterLabel, Rollover: t.Rollover || (t.Kind === 'Task' ? 'Carry' : 'Stay'), Cycle: t.Cycle, StartDate: t.StartDate || S.today, EndDate: t.EndDate, itemsText: treeToText(t.Items), Private: t.Private, PublicLabel: t.PublicLabel || 'Private' } :
     { Title: '', Kind: 'Task', Category: '', Days: R.DEFAULT_WORKDAYS, StartTime: '', DurationMin: '', AfterLabel: '', Rollover: 'Carry', Cycle: '', StartDate: S.today, EndDate: '', itemsText: '', Private: false, PublicLabel: 'Private' };
-  S.modal = { type: 'routine', editId: t ? t._id : null, f: f }; render();
+  owner = t ? t.OwnerEmail : (owner || S.myEmail);
+  S.modal = { type: 'routine', editId: t ? t._id : null, f: f, owner: owner, dept: t ? t.Department : (S.deptNew || '') }; render();
 }
 function saveRoutine() {
   var m = S.modal, f = m.f;
@@ -2342,7 +2383,8 @@ function saveRoutine() {
     if (f.Private) { savePrivate('tpl|' + t.TemplateId, { RealTitle: f.Title }); }
     Q.change('BOCC_Templates', t, fields, 0); p = Promise.resolve();
   } else {
-    fields.TemplateId = 'tpl-' + R.uid('x').slice(2); fields.OwnerEmail = S.myEmail; fields.Active = true; fields.Skips = []; fields.SortOrder = 50;
+    fields.TemplateId = 'tpl-' + R.uid('x').slice(2); fields.OwnerEmail = m.owner || S.myEmail; fields.Active = true;
+    if (fields.OwnerEmail.indexOf('dept:') === 0) { fields.Department = m.dept; fields.Private = false; fields.PublicLabel = ''; fields.Title = f.Title; f.Private = false; } fields.Skips = []; fields.SortOrder = 50;
     p = (f.Private ? savePrivate('tpl|' + fields.TemplateId, { RealTitle: f.Title }) : Promise.resolve()).then(function () { return createRec('BOCC_Templates', fields, 'TemplateId'); }).then(function (r) { S.templates.push(r); });
   }
   p.then(function () { S.modal = null; render(); materialize(); toast('Routine saved'); }, function (e) { m.err = 'Not saved: ' + e.message; render(); });
@@ -2686,6 +2728,13 @@ var A = {
   catdel: function (el) { var i = +el.getAttribute('data-i'); myPrefs().then(function (p) { var l = (p.Categories || []).slice(); l.splice(i, 1); Q.change('BOCC_Prefs', p, { Categories: l }, 0); render(); }); },
   catup: function (el) { var i = +el.getAttribute('data-i'); if (!i) { return; } myPrefs().then(function (p) { var l = (p.Categories || []).slice(), x = l[i]; l[i] = l[i - 1]; l[i - 1] = x; Q.change('BOCC_Prefs', p, { Categories: l }, 0); render(); }); },
   newroutine: function () { routineModal0(null); },
+  newdeptroutine: function (el) { var d = el.getAttribute('data-v'); if (!canEditDept(d)) { return; } S.deptNew = d; routineModal0(null, deptKey(d)); },
+  deptsel: function (el) { S.deptSel = el.value; render(); },
+  teamdept: function (el) { S.teamDept = el.getAttribute('data-v'); S.teamSel = ''; render(); },
+  depthide: function (el) {
+    var id = el.getAttribute('data-id');
+    myPrefs().then(function (p) { var l = (p.HiddenTpls || []).slice(), i = l.indexOf(id); if (i >= 0) { l.splice(i, 1); } else { l.push(id); tasksOf(S.myEmail).forEach(function (t) { if (t.TemplateId === id && R.isOpen(t) && !t.Archived) { Q.change('BOCC_Tasks', t, { Archived: true }, 0); } }); } Q.change('BOCC_Prefs', p, { HiddenTpls: l }, 0); render(); materialize(); toast(i >= 0 ? 'Back on your day' : 'Removed from your day'); });
+  },
   editroutine: function (el) { routineModal0(rec('BOCC_Templates', el.getAttribute('data-id'))); },
   stoproutine: function (el) { S.modal = { type: 'confirm', title: 'Stop this routine?', text: 'It won’t appear from today on. Everything already done stays in your history.', yes: 'Stop routine', act: 'stoproutine', id: el.getAttribute('data-id') }; render(); },
   saveroutine: function () { saveRoutine(); },
@@ -2697,12 +2746,12 @@ var A = {
     if (m.editId) { Q.change('BOCC_Contacts', rec('BOCC_Contacts', m.editId), fields, 0); S.modal = null; render(); return; }
     createRec('BOCC_Contacts', fields).then(function (c) { S.contacts.push(c); S.modal = null; render(); }, function (e) { m.err = e.message; render(); });
   },
-  newperson: function () { S.modal = { type: 'person', f: { Title: '', Email: '', JobTitle: '', ReportsTo: '', Access: 'Member', Raises: '', Active: true, SortOrder: 10 } }; render(); },
+  newperson: function () { S.modal = { type: 'person', f: { Title: '', Email: '', JobTitle: '', Department: '', ReportsTo: '', Access: 'Member', Raises: '', Active: true, SortOrder: 10 } }; render(); },
   editperson: function (el) { var p = rec('BOCC_People', el.getAttribute('data-id')); S.modal = { type: 'person', editId: p._id, f: baseCopy(p) }; render(); },
   saveperson: function () {
     var m = S.modal, f = m.f;
     if (!f.Title || !/@/.test(f.Email || '')) { m.err = 'Name and a Microsoft email are required.'; render(); return; }
-    var fields = { Title: f.Title, Email: lc(f.Email), JobTitle: f.JobTitle, ReportsTo: lc(f.ReportsTo), Access: f.Access, Raises: f.Raises, Active: f.Active !== false, SortOrder: f.SortOrder === '' ? 10 : +f.SortOrder };
+    var fields = { Title: f.Title, Email: lc(f.Email), JobTitle: f.JobTitle, Department: String(f.Department || '').trim(), ReportsTo: lc(f.ReportsTo), Access: f.Access, Raises: f.Raises, Active: f.Active !== false, SortOrder: f.SortOrder === '' ? 10 : +f.SortOrder };
     if (m.editId) { Q.change('BOCC_People', rec('BOCC_People', m.editId), fields, 0); S.modal = null; render(); return; }
     createRec('BOCC_People', fields, 'Email').then(function (p) {
       S.people.push(p); S.modal = null; render();
