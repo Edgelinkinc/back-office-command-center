@@ -926,7 +926,7 @@ var AUTH = (function () {
   var SCOPES = [CONFIG.spHost + '/AllSites.Manage'];
   function init() {
     app = new msal.PublicClientApplication({
-      auth: { clientId: CONFIG.clientId, authority: 'https://login.microsoftonline.com/' + CONFIG.tenantId, redirectUri: location.origin + location.pathname.replace(/index\.html$/i, '') },
+      auth: { clientId: CONFIG.clientId, authority: 'https://login.microsoftonline.com/' + CONFIG.tenantId, redirectUri: location.origin + location.pathname.replace(/index\.html$/i, ''), navigateToLoginRequestUrl: false },
       cache: { cacheLocation: 'localStorage', storeAuthStateInCookie: false }
     });
     // Not coming back from Microsoft? Clear any sign-in that was left half-finished, so the button always works.
