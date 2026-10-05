@@ -1670,11 +1670,11 @@ function pickerHtml(target, id, node) {
   activePeople().forEach(function (x) { list.push({ name: x.Title, role: x.JobTitle || 'Team', email: x.Email, team: true }); });
   S.contacts.forEach(function (c) { if (c.Active !== false) { list.push({ name: c.Title, role: c.Role, ntid: c.NTID, stores: c.Stores, email: c.Email, contactId: c._id }); } });
   var hits = list.filter(function (x) { return !q || lc(x.name + ' ' + x.role + ' ' + (x.ntid || '') + ' ' + (x.stores || '')).indexOf(q) >= 0; }).slice(0, 8);
-  return '<div class="pick" role="dialog" aria-label="Pick a person"><input id="pick-q" class="in" placeholder="Search name, store or NTID" value="' + esc(p.q || '') + '" data-act="pickq" autocomplete="off">' +
+  return '<div class="pick" role="dialog" aria-label="Pick a person"><input id="pick-q" class="in" placeholder="Type any name and press Enter — or pick from the list" value="' + esc(p.q || '') + '" data-act="pickq" autocomplete="off">' +
     hits.map(function (x, i) { return '<button class="po" data-act="pickone" data-i="' + i + '">' + whoChip(x) + '<span class="meta">' + esc(x.stores || '') + '</span></button>'; }).join('') +
     (q && !hits.length ? '<div class="meta" style="padding:4px">No match.</div>' : '') +
     '<div style="display:flex;justify-content:space-between;gap:6px;border-top:1px solid var(--line2);padding-top:6px;flex-wrap:wrap">' +
-    (q ? '<span style="display:flex;gap:4px;align-items:center"><label class="sr" for="pick-role">Role</label><select id="pick-role" class="in" style="height:28px;width:auto">' + opts(ROLES, 'Store Manager') + '</select><button class="add" data-act="picknew">+ Add “' + esc(p.q) + '”</button></span>' : '<span></span>') +
+    (q ? '<span style="display:flex;gap:4px;align-items:center;flex-wrap:wrap"><button class="btn xs p" data-act="picknew">Add “' + esc(p.q) + '”</button><span class="meta">as</span><label class="sr" for="pick-role">Role</label><select id="pick-role" class="in" style="height:28px;width:auto">' + opts(ROLES, p.role || 'Store Manager') + '</select></span>' : '<span class="meta">Type a name that isn’t listed and press Enter to add it.</span>') +
     '<button class="btn xs p" data-act="pickclose">Done</button></div></div>';
 }
 function pickerList() {
@@ -2115,7 +2115,9 @@ function newLog(ctx) {
       go(t); return;
     }
   }
-  S.modal = { type: 'log', f: f, draftId: draftId, state: 'Unsaved' }; render();
+  S.modal = { type: 'log', f: f, draftId: draftId, state: 'Unsaved' };
+  S.picker = { target: 'log', id: 'log', node: null, q: '' };
+  render(); setTimeout(function () { var q = byId('pick-q'); if (q) { q.focus(); } }, 30);
 }
 function latestDraft() {
   var best = null, k, i;
@@ -2536,7 +2538,12 @@ var A = {
   picknew: function () {
     var name = S.picker.q.trim(), role = byId('pick-role') ? byId('pick-role').value : 'Other';
     if (!name) { return; }
-    createRec('BOCC_Contacts', { Title: name, Role: role, Active: true }).then(function (c) { S.contacts.push(c); addPerson({ name: c.Title, role: c.Role, contactId: c._id }); }, function (e) { toast('Could not add: ' + e.message); });
+    S.picker.role = role;
+    // add to the conversation/task right away; save to contacts in the background so they're searchable next time
+    addPerson({ name: name, role: role });
+    var exists = S.contacts.some(function (c) { return lc(c.Title) === lc(name); });
+    if (!exists) { createRec('BOCC_Contacts', { Title: name, Role: role, Active: true }).then(function (c) { S.contacts.push(c); }, function () {}); }
+    setTimeout(function () { var q = byId('pick-q'); if (q) { q.focus(); } }, 30);
   },
   pickclose: function () { S.picker = null; render(); },
   unwith: function (el) { var i = +el.getAttribute('data-i'); withTask(el.getAttribute('data-id'), function (t) { var l = copy(t.WithPeople || []); l.splice(i, 1); changeTask(t, { WithPeople: l }, 0); render(); }); },
@@ -2669,6 +2676,7 @@ document.addEventListener('keydown', function (ev) {
   if (ev.key === 'Escape') { if (S.picker) { S.picker = null; render(); } else if (S.modal) { if (S.modal.type === 'log') { A.closelog(); } else { S.modal = null; render(); } } else if (S.drawer) { S.drawer = null; render(); } else if (S.navOpen) { S.navOpen = false; render(); } return; }
   var el = ev.target;
   if (ev.key === 'Enter' && el.id === 'quick') { ev.preventDefault(); var v = el.value; el.value = ''; quickAdd(v); return; }
+  if (ev.key === 'Enter' && el.id === 'pick-q') { ev.preventDefault(); if (S.picker && S.picker.q.trim()) { A.picknew(); } return; }
   if (ev.key === 'Enter' && el.id === 'f-cmt') { ev.preventDefault(); A.comment({ getAttribute: function () { return S.drawer.id; } }); return; }
   if (ev.key === 'Enter' && el.classList && el.classList.contains('stt')) { ev.preventDefault(); el.blur(); return; }
   if ((ev.key === 'Enter' || ev.key === ' ') && el.getAttribute && el.getAttribute('role') === 'button' && el.getAttribute('data-act')) { ev.preventDefault(); el.click(); }
@@ -2685,7 +2693,7 @@ function onField(ev) {
   if ((a = el.getAttribute('data-act'))) {
     if (a === 'search') { S.search = v.trim(); searchLater(); return; }
     if (a === 'daynote') { try { localStorage.setItem('bocc-daynote-' + el.getAttribute('data-day'), v); } catch (e) {} dayNoteLater(el.getAttribute('data-day'), v); return; }
-    if (a === 'pickq') { S.picker.q = v; render(); return; }
+    if (a === 'pickq') { S.picker.q = v; if (byId('pick-role')) { S.picker.role = byId('pick-role').value; } render(); return; }
     if (a === 'contactq') { S.contactQ = v; debounce(render, 200)(); return; }
     if (a === 'viewing' && ev.type === 'change') { S.viewing = v; render(); return; }
     if (a === 'importroutines' && ev.type === 'change' && el.files[0]) { importRoutines(el.files[0]); return; }
