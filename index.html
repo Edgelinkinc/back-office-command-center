@@ -929,6 +929,8 @@ var AUTH = (function () {
       auth: { clientId: CONFIG.clientId, authority: 'https://login.microsoftonline.com/' + CONFIG.tenantId, redirectUri: location.origin + location.pathname.replace(/index\.html$/i, '') },
       cache: { cacheLocation: 'localStorage', storeAuthStateInCookie: false }
     });
+    // Not coming back from Microsoft? Clear any sign-in that was left half-finished, so the button always works.
+    if (!/[#&](code|error|state)=/.test(location.hash)) { try { sessionStorage.removeItem('msal.interaction.status'); } catch (e) {} }
     return app.handleRedirectPromise().then(function (res) {
       if (res && res.account) { account = res.account; }
       if (!account) { var all = app.getAllAccounts(); if (all.length) { account = all[0]; } }
