@@ -1943,7 +1943,7 @@ function settingsView() {
     '<section class="card"><div class="gh">My routines <span><button class="btn xs p" data-act="newroutine">+ Add routine</button> <label class="btn xs" style="cursor:pointer">Import JSON<input type="file" accept=".json" data-act="importroutines" class="sr"></label></span></div><div class="scrollx"><table class="tbl" style="min-width:860px"><thead><tr><th>Routine</th><th>Type</th><th>Days</th><th>Time</th><th>Length</th><th>If missed / unfinished</th><th></th></tr></thead><tbody>' +
     (rt || '<tr><td colspan="7" class="meta">No routines yet. Add the things you do every day or week.</td></tr>') + '</tbody></table></div>' +
     (stopped.length ? '<div class="meta" style="padding:8px 12px">Stopped (history kept): ' + stopped.map(function (t) { return esc(asRuleTpl(t).Title); }).join(', ') + '</div>' : '') + '</section>' +
-    deptCard() + contactsCard() + (S.admin ? teamCard() : '') +
+    deptCard() + (S.admin ? contactsCard() + teamCard() : '') +
     '<section class="card"><div class="gh">Backup</div><div style="padding:12px;display:flex;flex-wrap:wrap;gap:8px;align-items:center"><button class="btn sm" data-act="backup" data-v="json">Export everything (JSON)</button><button class="btn sm" data-act="backup" data-v="tasks">Tasks (CSV)</button><button class="btn sm" data-act="exportnotes" data-v="csv">Notes (CSV)</button><span class="meta">Includes history and original dates.</span></div></section></div>';
   return html;
 }
