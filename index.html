@@ -679,7 +679,19 @@ var SP = (function () {
     return page(url);
   }
   function getItem(list, id) { return xhr('GET', listUrl(list) + '/items(' + id + ')?' + SELECT).then(function (r) { return r.data; }); }
+  // Only send columns the list really has: SharePoint rejects a save that names any unknown field.
+  function allowed(list) {
+    var def = BOCCSchema.byTitle[list], ok = { Title: 1 }, i;
+    if (def) { for (i = 0; i < def.fields.length; i++) { ok[def.fields[i].name] = 1; } }
+    return def ? ok : null;
+  }
+  function clean(list, fields) {
+    var ok = allowed(list), out = {}, k;
+    for (k in fields) { if (fields.hasOwnProperty(k) && (!ok || ok[k])) { out[k] = fields[k]; } }
+    return out;
+  }
   function create(list, fields) {
+    fields = clean(list, fields);
     return itemType(list).then(function (type) {
       var body = { __metadata: { type: type } }, k;
       for (k in fields) { if (fields.hasOwnProperty(k)) { body[k] = fields[k]; } }
@@ -687,6 +699,7 @@ var SP = (function () {
     }).then(function (r) { return getItem(list, r.data.Id || r.data.ID); });
   }
   function update(list, id, fields, etag) {
+    fields = clean(list, fields);
     return itemType(list).then(function (type) {
       var body = { __metadata: { type: type } }, k;
       for (k in fields) { if (fields.hasOwnProperty(k)) { body[k] = fields[k]; } }
@@ -724,10 +737,17 @@ var SP = (function () {
   }
   function me() { return xhr('GET', base() + '/_api/web/currentuser?$select=Id,Email,Title,LoginName,IsSiteAdmin').then(function (r) { return r.data; }); }
   function canManage() {
-    // Site owner = has ManagePermissions (PermissionKind 26 -> bit 25 of Low).
-    return xhr('GET', base() + '/_api/web/effectivebasepermissions')
-      .then(function (r) { var low = parseInt((r.data && r.data.Low) || 0, 10); return (low & 0x02000000) !== 0; })
-      .catch(function () { return false; });
+    // Admin = site collection admin, or a member of the site's Owners group.
+    // (Effective-permission checks are capped by the app's delegated scope, so they can't be used here.)
+    return Promise.all([
+      xhr('GET', base() + '/_api/web/currentuser?$select=IsSiteAdmin').then(function (r) { return !!r.data.IsSiteAdmin; }, function () { return false; }),
+      xhr('GET', base() + '/_api/web/associatedownergroup?$select=Id').then(function (r) { return r.data.Id; }, function () { return null; }),
+      xhr('GET', base() + '/_api/web/currentuser/groups?$select=Id').then(function (r) { return r.data.value || []; }, function () { return []; })
+    ]).then(function (res) {
+      if (res[0]) { return true; }
+      for (var i = 0; i < res[2].length; i++) { if (res[2][i].Id === res[1]) { return true; } }
+      return false;
+    });
   }
   function canRead(list) {
     return xhr('GET', listUrl(list) + '/items?$top=1&$select=Id').then(function () { return true; }).catch(function () { return false; });
