@@ -1226,7 +1226,8 @@ function departments() { var seen = {}, out = []; S.people.forEach(function (p) 
 function deptTemplates(dept, all) { var k = deptKey(dept); return dept ? S.templates.filter(function (t) { return t.OwnerEmail === k && (all || t.Active !== false); }) : []; }
 function hiddenFor(email) { return prefsOf(email).HiddenTpls || []; }
 function routineTemplatesOf(email) { var hid = hiddenFor(email); return templatesOf(email).concat(deptTemplates(deptOf(email)).filter(function (t) { return hid.indexOf(t.TemplateId) < 0; })); }
-function canEditDept(dept) { return !!dept && !!S.admin; }
+// department heads = Managers/Executives in that department (plus the site admin)
+function canEditDept(dept) { return !!dept && (!!S.admin || (lc(deptOf(S.myEmail)) === lc(dept) && isMgr())); }
 var materializing = false;
 function materialize() {
   if (materializing || !S.me) { return Promise.resolve(); }
@@ -2392,7 +2393,7 @@ function saveRoutine() {
   var p;
   if (m.editId) {
     var t = rec('BOCC_Templates', m.editId);
-    if (!t || (t.OwnerEmail !== S.myEmail && !(String(t.OwnerEmail).indexOf('dept:') === 0 && S.admin))) { m.err = 'Only the person this routine belongs to can change it.'; render(); return; }
+    if (!t || (t.OwnerEmail !== S.myEmail && !(String(t.OwnerEmail).indexOf('dept:') === 0 && canEditDept(t.Department)))) { m.err = 'Only the person this routine belongs to can change it.'; render(); return; }
     if (f.Private) { savePrivate('tpl|' + t.TemplateId, { RealTitle: f.Title }); }
     Q.change('BOCC_Templates', t, fields, 0); p = Promise.resolve();
   } else {
@@ -2694,7 +2695,7 @@ var A = {
     S.confirmBack = m; S.modal = { type: 'confirm', title: 'Discard this conversation?', text: 'Your typed notes will be deleted. To keep them for later, choose Keep draft — it stays saved and reopens next time you click Log Conversation.', yes: 'Discard', no: 'Keep draft', act: 'discardlog', draftId: m.draftId };
     render();
   },
-  confirmyes: function () { var m = S.modal; if (m.act === 'offboard') { S.modal = null; render(); offboard(m.id, m.to); return; } if (m.act === 'discardlog') { clearDraft(m.draftId); S.confirmBack = null; S.modal = null; } else if (m.act === 'stoproutine') { var t = rec('BOCC_Templates', m.id); if (t && (t.OwnerEmail === S.myEmail || (String(t.OwnerEmail).indexOf('dept:') === 0 && S.admin))) Q.change('BOCC_Templates', t, { Active: false, EndDate: S.today }, 0); S.modal = null; toast('Routine stopped · history kept'); } render(); },
+  confirmyes: function () { var m = S.modal; if (m.act === 'offboard') { S.modal = null; render(); offboard(m.id, m.to); return; } if (m.act === 'discardlog') { clearDraft(m.draftId); S.confirmBack = null; S.modal = null; } else if (m.act === 'stoproutine') { var t = rec('BOCC_Templates', m.id); if (t && (t.OwnerEmail === S.myEmail || (String(t.OwnerEmail).indexOf('dept:') === 0 && canEditDept(t.Department)))) Q.change('BOCC_Templates', t, { Active: false, EndDate: S.today }, 0); S.modal = null; toast('Routine stopped · history kept'); } render(); },
   scope: function (el) {
     var m = S.modal, t = S.tasks[m.id] || findTask(m.id), v = el.getAttribute('data-v');
     S.modal = null;
