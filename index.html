@@ -1211,9 +1211,10 @@ function softRender() {
 document.addEventListener('focusout', function () { setTimeout(function () { if (renderDeferred) { var a = document.activeElement; if (!a || !/INPUT|TEXTAREA|SELECT/.test(a.tagName)) { renderDeferred = false; render(); } } }, 150); });
 
 /* ---------------- recurrence materialization ---------------- */
-/* A person's own routine checklist is theirs alone: nobody else sees those tasks. Department routines, calls and blocks stay visible. */
+/* A person's own routine checklist is seen only by them and the people they report to (up to the CEO); peers don't see it. Department routines, calls and blocks stay visible. */
 function tplOwner(id) { for (var i = 0; i < S.templates.length; i++) { if (S.templates[i].TemplateId === id) { return S.templates[i].OwnerEmail || ''; } } return ''; }
-function hiddenFromMe(t) { return !!t && t.OwnerEmail !== S.myEmail && !!t.TemplateId && (t.Kind || 'Task') === 'Task' && tplOwner(t.TemplateId).indexOf('dept:') !== 0; }
+function isAbove(me, email) { var p = personBy(email), n = 0; while (p && p.ReportsTo && n++ < 20) { if (p.ReportsTo === lc(me)) { return true; } p = personBy(p.ReportsTo); } return false; }
+function hiddenFromMe(t) { return !!t && t.OwnerEmail !== S.myEmail && !isAbove(S.myEmail, t.OwnerEmail) && !!t.TemplateId && (t.Kind || 'Task') === 'Task' && tplOwner(t.TemplateId).indexOf('dept:') !== 0; }
 function tasksOf(email) { var out = [], k; for (k in S.tasks) { if (S.tasks.hasOwnProperty(k) && S.tasks[k].OwnerEmail === lc(email) && !hiddenFromMe(S.tasks[k])) { out.push(S.tasks[k]); } } return out; }
 function allTasks() { var out = [], k; for (k in S.tasks) { if (S.tasks.hasOwnProperty(k) && !hiddenFromMe(S.tasks[k])) { out.push(S.tasks[k]); } } return out; }
 function templatesOf(email) { return S.templates.filter(function (t) { return t.OwnerEmail === lc(email) && t.Active !== false; }); }
@@ -1283,7 +1284,7 @@ function asRuleTpl(t) {
 }
 function templatesForRules(email) {
   var l = routineTemplatesOf(email);
-  if (lc(email) !== S.myEmail) { l = l.filter(function (t) { return (t.Kind || 'Task') !== 'Task' || String(t.OwnerEmail).indexOf('dept:') === 0; }); }
+  if (lc(email) !== S.myEmail && !isAbove(S.myEmail, email)) { l = l.filter(function (t) { return (t.Kind || 'Task') !== 'Task' || String(t.OwnerEmail).indexOf('dept:') === 0; }); }
   return l.map(function (t) { var o = asRuleTpl(t); if (String(t.OwnerEmail).indexOf('dept:') === 0) { o.OwnerEmail = lc(email); } return o; });
 }
 
