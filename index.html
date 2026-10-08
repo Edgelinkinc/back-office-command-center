@@ -1490,6 +1490,7 @@ function taskRow(t, opts2) {
   if (opts2.showDone && t.CompletedAt) { chips.push('<span class="meta">Done ' + esc(fmtStamp(t.CompletedAt)) + '</span>'); }
   if (t.DueDate && !R.isOverdue(t, S.today) && R.isOpen(t)) { chips.push('<span class="meta">Due ' + esc(R.fmtShort(t.DueDate)) + '</span>'); }
   var cnt = R.countSubtasks(t.Subtasks); if (cnt.total) { chips.push('<span class="meta">' + cnt.done + '/' + cnt.total + '</span>'); }
+  if (t.StartTime) { chips.unshift('<span class="meta" style="font-weight:700;color:var(--plum)">' + esc(R.fmtTime(t.StartTime)) + '</span>'); }
   if (t.InviteSentAt) { chips.push('<span class="inv">Invite sent</span>'); }
   var sw = sharedOf(t); if (sw.length) { var others = [t.OwnerEmail].concat(sw).filter(function (e) { return e !== me; }); chips.push(chip('With ' + others.map(firstName).join(', '), 'blu')); }
   if (!t.SeenByOwner && t.AssignedByEmail && t.AssignedByEmail !== me && t.OwnerEmail === me && R.isOpen(t)) { chips.push(chip('New', 'mag')); }
@@ -1513,6 +1514,9 @@ function groupCards(tasks) {
   });
 }
 function sortTasks(a, b) {
+  // anything with a time goes first, in time order; untimed items after
+  var ta = R.minutesOf(a.StartTime), tb = R.minutesOf(b.StartTime);
+  if (ta !== null || tb !== null) { if (ta === null) { return 1; } if (tb === null) { return -1; } if (ta !== tb) { return ta - tb; } }
   var pa = { High: 0, Normal: 1, Low: 2 }[a.Priority || 'Normal'], pb = { High: 0, Normal: 1, Low: 2 }[b.Priority || 'Normal'];
   if ((a.Status === 'Completed') !== (b.Status === 'Completed')) { return a.Status === 'Completed' ? 1 : -1; }
   return pa - pb || (a._id > b._id ? 1 : -1);
@@ -1582,7 +1586,7 @@ function callsCard(sched, day) {
   });
   return html + '</div>';
 }
-function byTime(a, b) { var x = R.minutesOf(a.StartTime), y = R.minutesOf(b.StartTime); x = x === null ? 2000 : x; y = y === null ? 2000 : y; if (a.AfterLabel) { x = 1999; } if (b.AfterLabel) { y = 1999; } return x - y; }
+function byTime(a, b) { var x = R.minutesOf(a.StartTime), y = R.minutesOf(b.StartTime); x = x === null ? 2000 : x; y = y === null ? 2000 : y; if (x === 2000 && a.AfterLabel) { x = 1999; } if (y === 2000 && b.AfterLabel) { y = 1999; } return x - y; }
 function loggedToday(day, email) {
   if (email !== S.myEmail) { return ''; }
   var n = S.notes.concat(S.shared).filter(function (x) { return x.OwnerEmail === S.myEmail && x.ConvDate === day && !x.Archived; }).length;
@@ -1618,7 +1622,7 @@ function weekView() {
     var d = R.addDays(S.weekStart, i), items = dayItems(email, d), off = !R.isWorkDay(w, d);
     var theme = (prefsOf(email).DayThemes || {})[R.dow(d)] || '';
     var open = items.filter(function (t) { return t.Kind !== 'Call' && t.Kind !== 'Block' && R.isOpen(t); }).length;
-    items.sort(function (a, b) { var ka = (a.Kind === 'Call' || a.Kind === 'Block') ? 0 : 1, kb = (b.Kind === 'Call' || b.Kind === 'Block') ? 0 : 1; return ka - kb || byTime(a, b); });
+    items.sort(function (a, b) { var ka = (a.Kind === 'Call' || a.Kind === 'Block') ? 0 : 1, kb = (b.Kind === 'Call' || b.Kind === 'Block') ? 0 : 1; return byTime(a, b) || ka - kb || (a.Status === 'Completed') - (b.Status === 'Completed'); });
     cols += '<div class="wcol' + (off ? ' off' : '') + (d === S.today ? ' today' : '') + '"><div class="dh" data-act="gotoday" data-day="' + esc(d) + '" role="button" tabindex="0"><b>' + esc(R.fmtShort(d)) + (d === S.today ? ' · Today' : '') + '</b>' +
       '<div>' + esc(off ? 'Off day' : (theme || (open + ' open'))) + '</div></div>' +
       items.slice(0, 18).map(function (t) {
