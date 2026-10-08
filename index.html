@@ -590,11 +590,11 @@ var BOCCSchema = (function () {
       T('Status', { indexed: true }), T('PlannedDate', { indexed: true }), T('OriginalPlannedDate'), T('DueDate'), T('StartTime'), Num('DurationMin'),
       T('Rollover'), T('TemplateId'), T('CycleId'), N('Description'), N('Subtasks'), N('WithPeople'), T('Stores'), T('WaitingOn'), T('FollowUpDate'),
       T('CompletedAt'), T('CompletedBy'), T('CallState'), T('Visibility'), T('PublicLabel'), B('Archived'), N('SendBack'), N('Comments'),
-      T('InviteSentAt'), B('SeenByOwner'), T('SourceNoteKey')] },
+      T('InviteSentAt'), B('SeenByOwner'), T('SourceNoteKey'), N('SharedWith'), T('SharedTitle')] },
     { title: 'BOCC_Private', security: 'own', fields: [T('Key', { indexed: true, unique: true }), T('OwnerEmail'), T('RealTitle'), N('Details')] },
     { title: 'BOCC_Templates', security: 'team', fields: [
       T('TemplateId', { indexed: true, unique: true }), T('OwnerEmail', { indexed: true }), T('Kind'), T('Category'), T('Days'), T('StartTime'), Num('DurationMin'),
-      T('AfterLabel'), T('Rollover'), T('Cycle'), N('Items'), T('StartDate'), T('EndDate'), N('Skips'), B('Active'), B('Private'), T('PublicLabel'), T('Priority'), Num('SortOrder'), T('Department')] },
+      T('AfterLabel'), T('Rollover'), T('Cycle'), N('Items'), T('StartDate'), T('EndDate'), N('Skips'), B('Active'), B('Private'), T('PublicLabel'), T('Priority'), Num('SortOrder'), T('Department'), N('SharedWith'), T('SharedTitle')] },
     { title: 'BOCC_Notes', security: 'own', fields: noteFields() },
     { title: 'BOCC_SharedNotes', security: 'team', fields: noteFields() },
     { title: 'BOCC_DayNotes', security: 'own', fields: [T('Key', { indexed: true, unique: true }), T('OwnerEmail'), T('Day'), N('Text')] },
@@ -956,11 +956,12 @@ var AUTH = (function () {
       throw e;
     });
   }
-  return { init: init, login: login, logout: logout, token: token, account: function () { return account; } };
+  function silent(scopes) { return app.acquireTokenSilent({ scopes: scopes, account: account }).then(function (r) { return r.accessToken; }); }
+  return { init: init, login: login, logout: logout, token: token, silent: silent, account: function () { return account; } };
 }());
 
 /* ---------------- store ---------------- */
-var JSON_FIELDS = { Subtasks: [], WithPeople: [], SendBack: [], Comments: [], Items: [], Skips: [], People: [], TimeOff: [], DayThemes: {}, Categories: [], History: [], HiddenTpls: [] };
+var JSON_FIELDS = { Subtasks: [], WithPeople: [], SendBack: [], Comments: [], Items: [], Skips: [], People: [], TimeOff: [], DayThemes: {}, Categories: [], History: [], HiddenTpls: [], SharedWith: [] };
 var NUM_FIELDS = { DurationMin: 1, SortOrder: 1 };
 var BOOL_FIELDS = { Active: 1, Archived: 1, WantsFollowUp: 1, Private: 1, SeenByOwner: 1 };
 function fromSP(row) {
@@ -1021,14 +1022,15 @@ function isMgr() { return S.me && (S.me.Access === 'Manager' || S.me.Access === 
 function canEditTask(t) {
   if (!t) { return false; }
   var me = S.myEmail;
+  if (isWith(t, me)) { return true; }  // working with: either person can work it
   if (t.TemplateId && t.OwnerEmail !== me) { return false; }  // recurring work: only the person it belongs to can change it
   if (t.OwnerEmail === me || t.AssignedByEmail === me || isExec()) { return true; }
   return S.me && S.me.Access === 'Manager' && reportsOf(me, true).indexOf(t.OwnerEmail) >= 0;
 }
-function isPrivateFor(t) { return t.Visibility === 'Private' && t.OwnerEmail !== S.myEmail; }
+function isPrivateFor(t) { return t.Visibility === 'Private' && t.OwnerEmail !== S.myEmail && !isWith(t, S.myEmail); }
 function titleOf(t) {
   if (t.Visibility === 'Private') {
-    if (t.OwnerEmail !== S.myEmail) { return t.PublicLabel || 'Private'; }
+    if (t.OwnerEmail !== S.myEmail) { return (isWith(t, S.myEmail) && sharedTitleOf(t)) || t.PublicLabel || 'Private'; }
     var pv = S.privateMap['task|' + t.TaskKey] || (t.TemplateId && S.privateMap['tpl|' + t.TemplateId]);
     return (pv && pv.RealTitle) || t.Title;
   }
@@ -1213,12 +1215,21 @@ document.addEventListener('focusout', function () { setTimeout(function () { if 
 
 /* ---------------- recurrence materialization ---------------- */
 /* A person's own routine checklist is seen only by them and the people they report to (up to the CEO); peers don't see it. Department routines, calls and blocks stay visible. */
+/* "Working with": team members on a task, call or routine. One shared item that shows on everyone's day. Routine occurrences follow their routine's list. */
+function tplById(id) { for (var i = 0; i < S.templates.length; i++) { if (S.templates[i].TemplateId === id) { return S.templates[i]; } } return null; }
+function sharedOf(t) { if (!t) { return []; } var tp = t.TemplateId && tplById(t.TemplateId); var l = tp ? (tp.SharedWith || []) : (t.SharedWith || []); return (l || []).map(lc).filter(function (e) { return e && e !== lc(t.OwnerEmail); }); }
+function isWith(t, email) { return sharedOf(t).indexOf(lc(email)) >= 0; }
+function sharedTitleOf(t) { var tp = t.TemplateId && tplById(t.TemplateId); return (tp && tp.SharedTitle) || t.SharedTitle || ''; }
+function rawTasksOf(email) { var out = [], k; for (k in S.tasks) { if (S.tasks.hasOwnProperty(k) && S.tasks[k].OwnerEmail === lc(email)) { out.push(S.tasks[k]); } } return out; }
+function sharedSaved(email) { var out = [], k; email = lc(email); for (k in S.tasks) { if (S.tasks.hasOwnProperty(k) && S.tasks[k].OwnerEmail !== email && isWith(S.tasks[k], email)) { out.push(S.tasks[k]); } } return out; }
+function myAll(email) { return tasksOf(email).concat(sharedSaved(email)); }
 function tplOwner(id) { for (var i = 0; i < S.templates.length; i++) { if (S.templates[i].TemplateId === id) { return S.templates[i].OwnerEmail || ''; } } return ''; }
 function isAbove(me, email) { var p = personBy(email), n = 0; while (p && p.ReportsTo && n++ < 20) { if (p.ReportsTo === lc(me)) { return true; } p = personBy(p.ReportsTo); } return false; }
 /* Departments: you see your own department's work (execs and managers up the chain see more). Everyone else = calendar only (calls and blocks). */
 function fullView(email) { email = lc(email); if (!email || email === S.myEmail || isExec()) { return true; } var d = deptOf(S.myEmail); return (!!d && lc(deptOf(email)) === lc(d)) || isAbove(S.myEmail, email); }
 function teamPeople() { return activePeople().filter(function (p) { return fullView(p.Email); }); }
 function hiddenFromMe(t) {
+  if (t && isWith(t, S.myEmail)) { return false; }
   if (t && t.OwnerEmail !== S.myEmail && (t.Kind || 'Task') === 'Task' && t.AssignedByEmail !== S.myEmail && !fullView(t.OwnerEmail)) { return true; }
   return !!t && t.OwnerEmail !== S.myEmail && !isAbove(S.myEmail, t.OwnerEmail) && !!t.TemplateId && (t.Kind || 'Task') === 'Task' && tplOwner(t.TemplateId).indexOf('dept:') !== 0; }
 function tasksOf(email) { var out = [], k; for (k in S.tasks) { if (S.tasks.hasOwnProperty(k) && S.tasks[k].OwnerEmail === lc(email) && !hiddenFromMe(S.tasks[k])) { out.push(S.tasks[k]); } } return out; }
@@ -1269,6 +1280,12 @@ function dayItems(email, day) {
   var w = workOf(email), saved = tasksOf(email).filter(function (t) { return R.showsOnDay(t, day, S.today, w); });
   var virt = R.virtualOccurrences(templatesForRules(email), email, day, tasksOf(email));
   if (day <= S.today && email === S.myEmail) { virt = virt.filter(function (v) { return v.Kind === 'Call' || v.Kind === 'Block'; }); }
+  // shared with this person by someone else
+  sharedSaved(email).forEach(function (t) { if (R.showsOnDay(t, day, S.today, workOf(t.OwnerEmail))) { saved.push(t); } });
+  S.templates.forEach(function (tp) {
+    if (tp.Active === false || String(tp.OwnerEmail).indexOf('dept:') === 0 || lc(tp.OwnerEmail) === email || (tp.SharedWith || []).map(lc).indexOf(email) < 0) { return; }
+    virt = virt.concat(R.virtualOccurrences([asRuleTpl(tp)], tp.OwnerEmail, day, rawTasksOf(tp.OwnerEmail)));
+  });
   virt.forEach(function (v) { v._id = v.Id; });
   return saved.concat(virt);
 }
@@ -1294,6 +1311,61 @@ function templatesForRules(email) {
   if (!fullView(email)) { l = l.filter(function (t) { return (t.Kind || 'Task') !== 'Task'; }); }
   if (lc(email) !== S.myEmail && !isAbove(S.myEmail, email)) { l = l.filter(function (t) { return (t.Kind || 'Task') !== 'Task' || String(t.OwnerEmail).indexOf('dept:') === 0; }); }
   return l.map(function (t) { var o = asRuleTpl(t); if (String(t.OwnerEmail).indexOf('dept:') === 0) { o.OwnerEmail = lc(email); } return o; });
+}
+
+/* ---------------- email (Microsoft Graph, sent from the signed-in person's Outlook) ---------------- */
+var MAIL = (function () {
+  function appUrl() { return location.origin + location.pathname.replace(/index\.html$/i, ''); }
+  function recipients(list) {
+    var seen = {}, out = [];
+    (list || []).forEach(function (e) { e = lc(e); var p = personBy(e); if (e && e !== S.myEmail && !seen[e] && p && p.Active !== false) { seen[e] = 1; out.push(e); } });
+    return out;
+  }
+  function row(k, v) { return v ? '<tr><td style="padding:4px 14px 4px 0;color:#6B5B7B;font-size:13px;white-space:nowrap;vertical-align:top">' + esc(k) + '</td><td style="padding:4px 0;font-size:14px;color:#2A1A33">' + esc(v) + '</td></tr>' : ''; }
+  function html(o) {
+    return '<div style="font-family:Segoe UI,Arial,sans-serif;max-width:560px;border:1px solid #E5DCEB;border-radius:10px;overflow:hidden">' +
+      '<div style="background:#4A1B5C;color:#fff;padding:12px 18px;font-weight:700;letter-spacing:.5px">BACK OFFICE COMMAND CENTER</div>' +
+      '<div style="padding:16px 18px"><div style="font-size:14px;color:#2A1A33;margin-bottom:8px">' + esc(o.intro) + '</div>' +
+      '<div style="font-size:20px;font-weight:700;color:#4A1B5C;margin-bottom:10px">' + esc(o.title) + '</div><table style="border-collapse:collapse">' +
+      row('Type', o.kind) + row('Date', o.date) + row('Time', o.time) + row('Length', o.minutes) + row('Repeats', o.repeats) + row('Working with', o.withNames) + row('From', o.from) + row('Details', o.desc) +
+      '</table><div style="margin-top:16px"><a href="' + appUrl() + '" style="background:#E20074;color:#fff;text-decoration:none;padding:10px 18px;border-radius:6px;font-weight:700;display:inline-block">Open Command Center</a></div></div></div>';
+  }
+  function send(list, subject, o) {
+    var to = recipients(list);
+    if (!to.length) { return Promise.resolve(0); }
+    return AUTH.silent(['https://graph.microsoft.com/Mail.Send']).then(function (tok) {
+      return new Promise(function (resolve, reject) {
+        var x = new XMLHttpRequest();
+        x.open('POST', 'https://graph.microsoft.com/v1.0/me/sendMail', true);
+        x.setRequestHeader('Authorization', 'Bearer ' + tok);
+        x.setRequestHeader('Content-Type', 'application/json');
+        x.onload = function () { if (x.status >= 200 && x.status < 300) { resolve(to.length); } else { reject(new Error('HTTP ' + x.status)); } };
+        x.onerror = function () { reject(new Error('network')); };
+        x.send(JSON.stringify({ message: { subject: subject, body: { contentType: 'HTML', content: html(o) },
+          toRecipients: to.map(function (e) { return { emailAddress: { address: e, name: nameOf(e) } }; }) }, saveToSentItems: true }));
+      });
+    }).then(function (n) { return n; }, function () {
+      if (typeof toast === 'function') { toast('Email not sent to ' + to.map(firstName).join(', ') + ' — they will still see it in the app.'); }
+      return 0;
+    });
+  }
+  return { send: send };
+}());
+/* facts for an email from a task or routine */
+function mailFacts(f, title, intro) {
+  var days = f.Days ? R.DOW.filter(function (x, i) { return f.Days.charAt(i) === '1'; }).join(', ') : '';
+  var withL = [f.OwnerEmail].concat(f.SharedWith || []).map(lc).filter(function (e, i, a) { return e && a.indexOf(e) === i; });
+  return { intro: intro, title: title, kind: f.Kind === 'Call' ? 'Call / meeting' : f.Kind === 'Block' ? 'Work block' : 'Task',
+    date: f.PlannedDate ? R.fmtDate(f.PlannedDate) : (f.StartDate ? 'Starting ' + R.fmtDate(f.StartDate) : ''), time: f.StartTime ? R.fmtTime(f.StartTime) : '',
+    minutes: f.DurationMin ? f.DurationMin + ' min' : '', repeats: days, withNames: withL.length > 1 ? withL.map(nameOf).join(', ') : '', from: nameOf(S.myEmail), desc: f.Description || '' };
+}
+function mailAssigned(f, title) {
+  if (!f.OwnerEmail || lc(f.OwnerEmail) === S.myEmail) { return; }
+  MAIL.send([f.OwnerEmail], nameOf(S.myEmail) + ' assigned you: ' + title, mailFacts(f, title, nameOf(S.myEmail) + ' assigned you a ' + (f.Kind === 'Call' ? 'call' : 'task') + '.'));
+}
+function mailShared(f, title, people) {
+  if (!people || !people.length) { return; }
+  MAIL.send(people, nameOf(S.myEmail) + ' added you: ' + title, mailFacts(f, title, nameOf(S.myEmail) + ' added you to ' + (f.Kind === 'Call' ? 'a call' : f.Kind === 'Block' ? 'a work block' : 'a task') + (f.Days ? ' that repeats' : '') + '. It’s on your dashboard.'));
 }
 
 /* Views: everything the person sees. HTML strings, every user value passed through esc(). ES5. */
@@ -1384,9 +1456,9 @@ function mainView() {
     case 'week': return weekView();
     case 'assigned': return listView('Assigned to me', tasksOf(S.myEmail).filter(function (t) { return t.AssignedByEmail && t.AssignedByEmail !== S.myEmail && R.isOpen(t); }), 'Nothing assigned to you right now.');
     case 'sent': return listView('Sent by me', allTasks().filter(function (t) { return t.AssignedByEmail === S.myEmail && t.OwnerEmail !== S.myEmail && !t.Archived; }), 'You haven\'t assigned anything yet.', true);
-    case 'upcoming': return listView('Upcoming', tasksOf(S.myEmail).filter(function (t) { return R.isOpen(t) && R.effectiveDate(t, S.today, workOf(S.myEmail)) > S.today; }), 'Nothing scheduled ahead.', false, true);
-    case 'overdue': return listView('Overdue', tasksOf(S.myEmail).filter(function (t) { return R.isOverdue(t, S.today); }), 'Nothing overdue.');
-    case 'completed': return listView('Completed', tasksOf(S.myEmail).filter(function (t) { return t.Status === 'Completed'; }), 'Nothing completed in the last ' + CONFIG.taskWindowDays + ' days.', false, false, true);
+    case 'upcoming': return listView('Upcoming', myAll(S.myEmail).filter(function (t) { return R.isOpen(t) && R.effectiveDate(t, S.today, workOf(S.myEmail)) > S.today; }), 'Nothing scheduled ahead.', false, true);
+    case 'overdue': return listView('Overdue', myAll(S.myEmail).filter(function (t) { return R.isOverdue(t, S.today); }), 'Nothing overdue.');
+    case 'completed': return listView('Completed', myAll(S.myEmail).filter(function (t) { return t.Status === 'Completed'; }), 'Nothing completed in the last ' + CONFIG.taskWindowDays + ' days.', false, false, true);
     case 'team': return teamView();
     case 'log': return logView();
     case 'raises': return S.canRaises ? raisesView() : '';
@@ -1419,6 +1491,7 @@ function taskRow(t, opts2) {
   if (t.DueDate && !R.isOverdue(t, S.today) && R.isOpen(t)) { chips.push('<span class="meta">Due ' + esc(R.fmtShort(t.DueDate)) + '</span>'); }
   var cnt = R.countSubtasks(t.Subtasks); if (cnt.total) { chips.push('<span class="meta">' + cnt.done + '/' + cnt.total + '</span>'); }
   if (t.InviteSentAt) { chips.push('<span class="inv">Invite sent</span>'); }
+  var sw = sharedOf(t); if (sw.length) { var others = [t.OwnerEmail].concat(sw).filter(function (e) { return e !== me; }); chips.push(chip('With ' + others.map(firstName).join(', '), 'blu')); }
   if (!t.SeenByOwner && t.AssignedByEmail && t.AssignedByEmail !== me && t.OwnerEmail === me && R.isOpen(t)) { chips.push(chip('New', 'mag')); }
   var priv = t.Visibility === 'Private';
   var flash = S.flash[t._id] ? ' flash' : '';
@@ -1475,8 +1548,8 @@ function dayView(email, day) {
   }
   var empty = !tasks.length ? '<div class="card"><div class="empty">' + (mine ? 'Nothing on this day yet. Use quick add, or set up your routine in Settings.' : 'Nothing on this day.') + '</div></div>' : '';
   return '<div class="cols"><section class="colL" aria-label="Tasks">' + headerH + stats + asg + big.join('') +
-    (small.length ? '<div class="grid2">' + small.join('') + '</div>' : '') + empty + dn + '</section>' +
-    '<aside class="colR" aria-label="Schedule">' + scheduleCards(sched, day, email) + loggedToday(day, email) + '</aside></div>';
+    (small.length ? '<div class="grid2">' + small.join('') + '</div>' : '') + empty + callsCard(sched, day) + dn + '</section>' +
+    '<aside class="colR" aria-label="Schedule">' + blocksCard(sched, day) + loggedToday(day, email) + '</aside></div>';
 }
 function schedRow(t, day) {
   var now = R.nyNow(), past = false, st = '';
@@ -1488,22 +1561,26 @@ function schedRow(t, day) {
   else if (priv) { sub.push('Private'); }
   if (t.DurationMin) { sub.push(t.DurationMin + ' min'); }
   if (t.Kind === 'Block' && !t.StartTime && t.OwnerEmail === S.myEmail) { sub.push('start time not set'); }
+  var sw = sharedOf(t); if (sw.length) { sub.push('with ' + [t.OwnerEmail].concat(sw).filter(function (e) { return e !== S.myEmail; }).map(firstName).join(', ')); }
   if (st === 'Not recorded') { sub.push('Not recorded'); } else if (st === 'Held') { sub.push('Held'); } else if (st === 'Missed') { sub.push('Missed'); }
   return '<div class="s' + (past ? ' past' : '') + (priv ? ' priv' : '') + '" data-act="open" data-id="' + esc(t._id) + '"><div class="t">' + esc(time) + '</div><div class="w"><b>' +
     (priv ? '<span style="vertical-align:-2px">' + ICON.lock + '</span> ' : '') + esc(titleOf(t)) + '</b><i>' + esc(sub.join(' · ')) + '</i></div></div>';
 }
-function scheduleCards(sched, day, email) {
-  var calls = sched.filter(function (t) { return t.Kind === 'Call'; }).sort(byTime), blocks = sched.filter(function (t) { return t.Kind === 'Block'; }).sort(byTime);
+function blocksCard(sched, day) {
+  var blocks = sched.filter(function (t) { return t.Kind === 'Block'; }).sort(byTime);
+  return '<div class="card"><div class="gh">Work blocks</div>' + (blocks.length ? blocks.map(function (b) { return schedRow(b, day); }).join('') : '<div class="empty">No work blocks.</div>') + '</div>';
+}
+function callsCard(sched, day) {
+  var calls = sched.filter(function (t) { return t.Kind === 'Call'; }).sort(byTime);
   var now = R.nyNow(), html = '', placed = false;
-  html += '<div class="card"><div class="gh dk">Calls <span>' + esc(R.fmtShort(day)) + '</span></div>';
+  html += '<div class="card"><div class="gh dk">Calls &amp; meetings <span>' + esc(R.fmtShort(day)) + '</span></div>';
   if (!calls.length) { html += '<div class="empty">No calls.</div>'; }
   calls.forEach(function (c) {
     var m = R.minutesOf(c.StartTime);
     if (day === S.today && !placed && m !== null && m > now.minutes) { html += '<div class="nowline"><span>' + esc(R.fmtTime(now.time)) + '</span></div>'; placed = true; }
     html += schedRow(c, day);
   });
-  html += '</div><div class="card"><div class="gh">Work blocks</div>' + (blocks.length ? blocks.map(function (b) { return schedRow(b, day); }).join('') : '<div class="empty">No work blocks.</div>') + '</div>';
-  return html;
+  return html + '</div>';
 }
 function byTime(a, b) { var x = R.minutesOf(a.StartTime), y = R.minutesOf(b.StartTime); x = x === null ? 2000 : x; y = y === null ? 2000 : y; if (a.AfterLabel) { x = 1999; } if (b.AfterLabel) { y = 1999; } return x - y; }
 function loggedToday(day, email) {
@@ -1677,7 +1754,7 @@ function drawerHtml() {
     '<label class="sr" for="f-title">Title</label><input id="f-title" class="ttl" data-f="Title" value="' + esc(titleOf(t)) + '"' + d + '>' +
     '<div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:4px">' + chips.join('') + (t.AssignedByEmail && t.AssignedByEmail !== t.OwnerEmail ? chip('Assigned by ' + nameOf(t.AssignedByEmail), 'mag') : '') + '</div></div>' +
     '<button class="ib" style="color:var(--plum);border-color:var(--line)" data-act="closedrawer" aria-label="Close">×</button></div>' +
-    '<div class="dbody" id="dbody">' + conflict + fields + (call || blk ? '' : subs) + withH + desc + sendBack + sbHist + convH + comments + hist + '</div>' + foot + '</aside>';
+    '<div class="dbody" id="dbody">' + conflict + fields + shareSec(t, ro) + (call || blk ? '' : subs) + withH + desc + sendBack + sbHist + convH + comments + hist + '</div>' + foot + '</aside>';
 }
 function descOf(t) {
   if (t.Visibility === 'Private' && t.OwnerEmail === S.myEmail) { var pv = S.privateMap['task|' + t.TaskKey]; return pv ? pv.Details : ''; }
@@ -1762,6 +1839,23 @@ function modalHtml() {
   else if (m.type === 'scope') { body = '<div class="modal sm" role="alertdialog" aria-label="Apply change to"><div class="mhd"><h2>Change a routine item</h2></div><div class="mbody">Apply this change to just this occurrence, or to this and all future ones? Completed history is never changed.</div><div class="dft" style="justify-content:flex-end"><button class="btn sm" data-act="scope" data-v="one">This occurrence</button><button class="btn sm p" data-act="scope" data-v="future">This and future</button></div></div>'; }
   return '<div class="scrim" data-act="' + (m.type === 'log' ? 'closelog' : 'closemodal') + '"></div>' + body;
 }
+function shareSec(t, ro) {
+  var sw = sharedOf(t), tpl = t.TemplateId && tplById(t.TemplateId);
+  var names = sw.map(function (e) { return '<span class="c blu">' + esc(nameOf(e)) + (!ro && !tpl && (t.OwnerEmail === S.myEmail || t.AssignedByEmail === S.myEmail) ? ' <button class="ico" style="padding:0" data-act="dsharedel" data-id="' + esc(t._id) + '" data-v="' + esc(e) + '" aria-label="Remove">×</button>' : '') + '</span>'; }).join(' ');
+  var canAdd = !ro && !tpl && (t.OwnerEmail === S.myEmail || t.AssignedByEmail === S.myEmail || isExec());
+  var add = canAdd ? '<label class="sr" for="d-share">Add someone</label><select id="d-share" class="in" style="width:auto;height:28px" data-act="dshareadd" data-id="' + esc(t._id) + '"><option value="">+ Add someone…</option>' +
+    activePeople().filter(function (p) { return p.Email !== t.OwnerEmail && sw.indexOf(p.Email) < 0; }).map(function (p) { return '<option value="' + esc(p.Email) + '">' + esc(p.Email === S.myEmail ? 'Me' : p.Title) + '</option>'; }).join('') + '</select>' : '';
+  if (!sw.length && !canAdd) { return ''; }
+  return '<div class="sec"><div class="h">Working with</div><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">' + (t.OwnerEmail !== S.myEmail ? '<span class="c">' + esc(nameOf(t.OwnerEmail)) + ' (owner)</span> ' : '') + names + add + '</div>' +
+    (tpl && t.OwnerEmail === S.myEmail ? '<div class="meta" style="margin-top:4px">Set on the routine — change it in Settings → My routines.</div>' : '') + '</div>';
+}
+function sharePicker(list, owner, act) {
+  list = list || [];
+  return '<div class="opts">' + activePeople().filter(function (p) { return p.Email !== lc(owner); }).map(function (p) {
+    var on = list.indexOf(p.Email) >= 0;
+    return '<button class="opt' + (on ? ' on' : '') + '" data-act="' + act + '" data-v="' + esc(p.Email) + '" aria-pressed="' + on + '">' + esc(p.Email === S.myEmail ? 'Me' : p.Title) + '</button>';
+  }).join('') + '</div><div class="meta" style="margin-top:4px">They see it on their dashboard and get an email.</div>';
+}
 function taskModal(m) {
   var me = S.myEmail, f = m.f, owner = f.OwnerEmail, w = workOf(owner);
   var people = activePeople();
@@ -1770,6 +1864,7 @@ function taskModal(m) {
     '<div class="fgrid">' +
     '<div class="fld spanall"><label for="t-title">Title *</label><input id="t-title" class="in' + (m.err && !f.Title ? ' bad' : '') + '" data-mf="Title" value="' + esc(f.Title) + '"></div>' +
     '<div class="fld spanall"><span class="lbl">Assign to</span><div class="opts">' + people.map(function (p) { return '<button class="opt' + (owner === p.Email ? ' on' : '') + '" data-act="mset" data-k="OwnerEmail" data-v="' + esc(p.Email) + '">' + esc(p.Email === me ? 'Me' : p.Title + (p.JobTitle ? ' · ' + p.JobTitle : '')) + '</button>'; }).join('') + '</div></div>' +
+    '<div class="fld spanall"><span class="lbl">Working with</span>' + sharePicker(f.SharedWith, owner, 'mshare') + '</div>' +
     '<div class="fld"><label for="t-kind">Type</label><select id="t-kind" class="in" data-mf="Kind">' + opt('Task', f.Kind) + opt('Call', f.Kind, 'Call / meeting') + opt('Block', f.Kind, 'Work block') + '</select></div>' +
     '<div class="fld"><label for="t-cat">Category</label><input id="t-cat" class="in" list="catlist2" data-mf="Category" value="' + esc(f.Category) + '"><datalist id="catlist2">' + myCategories().map(function (c) { return '<option value="' + esc(c) + '">'; }).join('') + '</datalist></div>' +
     '<div class="fld"><label for="t-plan">Planned date *</label><input type="date" id="t-plan" class="in" data-mf="PlannedDate" value="' + esc(f.PlannedDate) + '"></div>' +
@@ -1999,6 +2094,7 @@ function routineModal(m) {
     '<div class="fld"><label for="rt-sd">Starts</label><input type="date" id="rt-sd" class="in" data-tf="StartDate" value="' + esc(f.StartDate) + '"></div>' +
     '<div class="fld"><label for="rt-ed">Ends (optional)</label><input type="date" id="rt-ed" class="in" data-tf="EndDate" value="' + esc(f.EndDate) + '"></div>' +
     (f.Kind === 'Task' ? '<div class="fld spanall"><label for="rt-items">Checklist — one per line. Start a line with “- ” for a sub-item, “-- ” for a third level, end with “ *” if required.</label><textarea id="rt-items" class="in" rows="7" data-tf="itemsText">' + esc(f.itemsText) + '</textarea></div>' : '') +
+    (dept ? '' : '<div class="fld spanall"><span class="lbl">Working with</span>' + sharePicker(f.SharedWith, m.owner || S.myEmail, 'mshare') + '</div>') +
     (dept ? '<div class="spanall meta" style="white-space:normal">Everyone in ' + esc(dept) + ' gets this on their own day.</div>' : '<div class="spanall"><label style="display:flex;gap:8px;align-items:center;font-weight:700;color:var(--plum)"><input type="checkbox" data-tf="Private"' + (f.Private ? ' checked' : '') + '> Private routine</label>' + (f.Private ? '<div class="fld" style="margin-top:6px;max-width:300px"><label for="rt-pl">What the team sees</label><select id="rt-pl" class="in" data-tf="PublicLabel">' + opts(['Private', 'Confidential HR', 'Personal appt', 'Busy'], f.PublicLabel) + '</select></div>' : '') + '</div>') +
     '</div>' + (m.err ? '<div class="err" style="margin-top:8px">' + esc(m.err) + '</div>' : '') + '<div class="meta" style="margin-top:8px">Changes apply from today forward. Items already on past days keep what they were.</div></div>' +
     '<div class="dft" style="justify-content:flex-end"><button class="btn sm" data-act="closemodal">Cancel</button><button class="btn sm p" data-act="saveroutine">Save routine</button></div></div>';
@@ -2085,7 +2181,7 @@ function nyToIso(date, time) {
 /* ---------- tasks ---------- */
 function withTask(id, fn, anyone) {
   var t = findTask(id); if (!t) { return; }
-  if (!anyone && t.TemplateId && t.OwnerEmail !== S.myEmail) { toast('Only ' + firstName(t.OwnerEmail) + ' can change their recurring tasks.'); render(); return; }
+  if (!anyone && t.TemplateId && t.OwnerEmail !== S.myEmail && !isWith(t, S.myEmail)) { toast('Only ' + firstName(t.OwnerEmail) + ' can change their recurring tasks.'); render(); return; }
   if (t.Virtual) {
     materializeVirtual(t).then(function (saved) {
       if (S.drawer && S.drawer.id === id) { S.drawer.id = saved._id; }
@@ -2132,6 +2228,7 @@ function applyTaskField(t, field, value) {
     if (value !== S.myEmail) { f.AssignedByEmail = S.myEmail; f.SeenByOwner = false; }
     if (t.Visibility === 'Private') { toast('Private items can’t be reassigned — make it Team first.'); render(); return; }
     logActivity(t, 'Assigned', nameOf(value));
+    if (value !== S.myEmail) { mailAssigned({ OwnerEmail: value, Kind: t.Kind, PlannedDate: t.PlannedDate, StartTime: t.StartTime, DurationMin: t.DurationMin, Description: t.Description, SharedWith: sharedOf(t) }, titleOf(t)); }
   }
   if (field === 'Visibility') {
     if (value === 'Private') {
@@ -2320,7 +2417,7 @@ function newTaskModal(owner) {
   var me = S.myEmail, defPriv = prefsOf(me).DefaultVisibility === 'Private';
   owner = owner || me;
   S.modal = { type: 'task', key: R.uid('t'), f: { Title: '', OwnerEmail: owner, Kind: 'Task', Category: '', PlannedDate: S.day < S.today ? S.today : S.day, DueDate: '', Priority: 'Normal', StartTime: '', DurationMin: '',
-    Rollover: 'Roll', repeat: 'once', days: R.DEFAULT_WORKDAYS, independent: false, Description: '', Private: defPriv && owner === me, PublicLabel: 'Private' } };
+    Rollover: 'Roll', repeat: 'once', days: R.DEFAULT_WORKDAYS, independent: false, Description: '', Private: defPriv && owner === me, PublicLabel: 'Private', SharedWith: [] } };
   render(); setTimeout(function () { var el = byId('t-title'); if (el) { el.focus(); } }, 30);
 }
 function saveTask() {
@@ -2334,7 +2431,7 @@ function saveTask() {
     var tid = 'tpl-' + m.key.slice(2);
     var tpl = { Title: priv ? f.PublicLabel : f.Title, TemplateId: tid, OwnerEmail: f.OwnerEmail, Kind: f.Kind, Category: f.Category, Days: f.repeat === 'workdays' ? (prefsOf(f.OwnerEmail).WorkDays || R.DEFAULT_WORKDAYS) : f.days,
       StartTime: f.StartTime, DurationMin: f.DurationMin === '' ? null : +f.DurationMin, Rollover: f.Kind === 'Task' ? (f.independent ? 'Independent' : (f.Rollover === 'Stay' ? 'Stay' : 'Carry')) : (f.Kind === 'Block' && f.Rollover === 'Roll' ? 'Roll' : 'Stay'),
-      Items: [], StartDate: f.PlannedDate, EndDate: '', Skips: [], Active: true, Private: priv, PublicLabel: priv ? f.PublicLabel : '', Priority: f.Priority, SortOrder: 50, Description: f.Description };
+      Items: [], StartDate: f.PlannedDate, EndDate: '', Skips: [], Active: true, Private: priv, PublicLabel: priv ? f.PublicLabel : '', Priority: f.Priority, SortOrder: 50, Description: f.Description, SharedWith: (f.SharedWith || []).filter(function (e) { return e !== f.OwnerEmail; }), SharedTitle: priv && (f.SharedWith || []).length ? f.Title : '' };
     p = (priv ? savePrivate('tpl|' + tid, { RealTitle: f.Title, Details: f.Description }) : Promise.resolve()).then(function () {
       return createRec('BOCC_Templates', tpl, 'TemplateId');
     }).then(function (r) { S.templates.push(r); return materialize(); });
@@ -2343,12 +2440,17 @@ function saveTask() {
     var t = { Title: priv ? f.PublicLabel : f.Title, TaskKey: key, OwnerEmail: f.OwnerEmail, AssignedByEmail: f.OwnerEmail !== me ? me : '', Kind: f.Kind, Category: f.Category,
       Priority: f.Priority, Status: 'Not Started', PlannedDate: f.PlannedDate, OriginalPlannedDate: f.PlannedDate, DueDate: f.DueDate, StartTime: f.StartTime,
       DurationMin: f.DurationMin === '' ? null : +f.DurationMin, Rollover: f.Kind === 'Call' ? 'Stay' : f.Rollover, Description: priv ? '' : f.Description, Subtasks: [], WithPeople: [],
-      Visibility: priv ? 'Private' : 'Team', PublicLabel: priv ? f.PublicLabel : '', SeenByOwner: f.OwnerEmail === me };
+      Visibility: priv ? 'Private' : 'Team', PublicLabel: priv ? f.PublicLabel : '', SeenByOwner: f.OwnerEmail === me,
+      SharedWith: (f.SharedWith || []).filter(function (e) { return e !== f.OwnerEmail; }), SharedTitle: priv && (f.SharedWith || []).length ? f.Title : '' };
     p = (priv ? savePrivate('task|' + key, { RealTitle: f.Title, Details: f.Description }) : Promise.resolve()).then(function () {
       return createRec('BOCC_Tasks', t, 'TaskKey');
     }).then(function (r) { S.tasks[r._id] = r; logActivity(r, f.OwnerEmail !== me ? 'Assigned to ' + nameOf(f.OwnerEmail) : 'Created'); });
   }
-  p.then(function () { S.modal = null; render(); toast(f.OwnerEmail !== me ? 'Assigned to ' + nameOf(f.OwnerEmail) : 'Task added'); },
+  p.then(function () {
+    var mf = { OwnerEmail: f.OwnerEmail, Kind: f.Kind, PlannedDate: f.repeat === 'once' ? f.PlannedDate : '', StartDate: f.PlannedDate, StartTime: f.StartTime, DurationMin: f.DurationMin,
+      Days: f.repeat === 'once' ? '' : (f.repeat === 'workdays' ? (prefsOf(f.OwnerEmail).WorkDays || R.DEFAULT_WORKDAYS) : f.days), Description: f.Description, SharedWith: f.SharedWith || [] };
+    mailAssigned(mf, f.Title); mailShared(mf, f.Title, (f.SharedWith || []).filter(function (e) { return e !== f.OwnerEmail; }));
+    S.modal = null; render(); toast(f.OwnerEmail !== me ? 'Assigned to ' + nameOf(f.OwnerEmail) : 'Task added'); },
     function (e) { m.saving = false; m.err = 'Not saved: ' + e.message + '. Nothing was lost — try again.'; render(); });
 }
 function quickAdd(text) {
@@ -2388,8 +2490,8 @@ function textToTree(text) {
 }
 function routineModal0(t, owner) {
   var f = t ? { Title: asRuleTpl(t).Title, Kind: t.Kind || 'Task', Category: t.Category, Days: t.Days || R.DEFAULT_WORKDAYS, StartTime: t.StartTime, DurationMin: t.DurationMin === null ? '' : t.DurationMin,
-    AfterLabel: t.AfterLabel, Rollover: t.Rollover || (t.Kind === 'Task' ? 'Carry' : 'Stay'), Cycle: t.Cycle, StartDate: t.StartDate || S.today, EndDate: t.EndDate, itemsText: treeToText(t.Items), Private: t.Private, PublicLabel: t.PublicLabel || 'Private' } :
-    { Title: '', Kind: 'Task', Category: '', Days: R.DEFAULT_WORKDAYS, StartTime: '', DurationMin: '', AfterLabel: '', Rollover: 'Carry', Cycle: '', StartDate: S.today, EndDate: '', itemsText: '', Private: false, PublicLabel: 'Private' };
+    AfterLabel: t.AfterLabel, Rollover: t.Rollover || (t.Kind === 'Task' ? 'Carry' : 'Stay'), Cycle: t.Cycle, StartDate: t.StartDate || S.today, EndDate: t.EndDate, itemsText: treeToText(t.Items), Private: t.Private, PublicLabel: t.PublicLabel || 'Private', SharedWith: (t.SharedWith || []).slice() } :
+    { Title: '', Kind: 'Task', Category: '', Days: R.DEFAULT_WORKDAYS, StartTime: '', DurationMin: '', AfterLabel: '', Rollover: 'Carry', Cycle: '', StartDate: S.today, EndDate: '', itemsText: '', Private: false, PublicLabel: 'Private', SharedWith: [] };
   owner = t ? t.OwnerEmail : (owner || S.myEmail);
   S.modal = { type: 'routine', editId: t ? t._id : null, f: f, owner: owner, dept: t ? t.Department : (S.deptNew || '') }; render();
 }
@@ -2399,7 +2501,9 @@ function saveRoutine() {
   if (f.Days.indexOf('1') < 0) { m.err = 'Pick at least one day.'; render(); return; }
   var fields = { Kind: f.Kind, Category: f.Category, Days: f.Days, StartTime: f.StartTime, DurationMin: f.DurationMin === '' ? null : +f.DurationMin, AfterLabel: f.AfterLabel,
     Rollover: f.Kind === 'Call' ? 'Stay' : f.Rollover, Cycle: f.Kind === 'Task' ? f.Cycle : '', StartDate: f.StartDate || S.today, EndDate: f.EndDate, Items: f.Kind === 'Task' ? textToTree(f.itemsText) : [],
-    Private: !!f.Private, PublicLabel: f.Private ? f.PublicLabel : '', Title: f.Private ? f.PublicLabel : f.Title };
+    Private: !!f.Private, PublicLabel: f.Private ? f.PublicLabel : '', Title: f.Private ? f.PublicLabel : f.Title,
+    SharedWith: (f.SharedWith || []).slice(), SharedTitle: f.Private && (f.SharedWith || []).length ? f.Title : '' };
+  var before = m.editId ? ((rec('BOCC_Templates', m.editId) || {}).SharedWith || []) : [], added = (f.SharedWith || []).filter(function (e) { return before.indexOf(e) < 0; });
   var p;
   if (m.editId) {
     var t = rec('BOCC_Templates', m.editId);
@@ -2411,7 +2515,9 @@ function saveRoutine() {
     if (fields.OwnerEmail.indexOf('dept:') === 0) { fields.Department = m.dept; fields.Private = false; fields.PublicLabel = ''; fields.Title = f.Title; f.Private = false; } fields.Skips = []; fields.SortOrder = 50;
     p = (f.Private ? savePrivate('tpl|' + fields.TemplateId, { RealTitle: f.Title }) : Promise.resolve()).then(function () { return createRec('BOCC_Templates', fields, 'TemplateId'); }).then(function (r) { S.templates.push(r); });
   }
-  p.then(function () { S.modal = null; render(); materialize(); toast('Routine saved'); }, function (e) { m.err = 'Not saved: ' + e.message; render(); });
+  p.then(function () {
+    if (added.length) { mailShared({ OwnerEmail: m.owner || S.myEmail, Kind: f.Kind, StartDate: f.StartDate || S.today, Days: f.Days, StartTime: f.StartTime, DurationMin: f.DurationMin }, f.Title, added); }
+    S.modal = null; render(); materialize(); toast('Routine saved'); }, function (e) { m.err = 'Not saved: ' + e.message; render(); });
 }
 function importRoutines(file) {
   var fr = new FileReader();
@@ -2482,6 +2588,7 @@ function offboard(personId, to) {
     render();
     return SP.removeMember(who).then(function () { return true; }, function () { return false; });
   }).then(function (accessRemoved) {
+    if (moved) { MAIL.send([to], p.Title + '’s open work was handed to you', { intro: nameOf(S.myEmail) + ' handed ' + moved + ' open task' + (moved === 1 ? '' : 's') + ' from ' + p.Title + ' to you. They’re on your dashboard under Assigned to me.', title: moved + ' task' + (moved === 1 ? '' : 's') + ' handed over', from: nameOf(S.myEmail) }); }
     toast(p.Title + ' removed: ' + moved + ' open task' + (moved === 1 ? '' : 's') + ' moved to ' + firstName(to) + ', ' + stopped + ' routine' + (stopped === 1 ? '' : 's') + ' stopped' +
       (archived ? ', ' + archived + ' private item' + (archived === 1 ? '' : 's') + ' archived' : '') + (accessRemoved ? ', site access removed.' : '. Site access still needs removing — ask Claude.'));
   }, function (e) { toast('Stopped partway: ' + e.message + '. Run it again to finish — it picks up where it left off.'); });
@@ -2521,7 +2628,7 @@ function decideRaise(id, decision) {
     var owner = r.SubmittedBy;
     createRec('BOCC_Tasks', { Title: 'Enter approved raise in payroll — ' + r.Title + (r.EffectiveDate ? ' · eff. ' + R.fmtShort(r.EffectiveDate) : ''), TaskKey: 'raise|' + r.RequestKey,
       OwnerEmail: owner, AssignedByEmail: S.myEmail, Kind: 'Task', Category: 'Payroll', Priority: 'High', Status: 'Not Started', PlannedDate: R.nextWorkDayOnOrAfter(workOf(owner), S.today),
-      OriginalPlannedDate: R.nextWorkDayOnOrAfter(workOf(owner), S.today), Rollover: 'Roll', Visibility: 'Team', Subtasks: [], WithPeople: [], SeenByOwner: false }, 'TaskKey').then(function (t) { S.tasks[t._id] = t; }, function () {});
+      OriginalPlannedDate: R.nextWorkDayOnOrAfter(workOf(owner), S.today), Rollover: 'Roll', Visibility: 'Team', Subtasks: [], WithPeople: [], SeenByOwner: false }, 'TaskKey').then(function (t) { S.tasks[t._id] = t; mailAssigned(t, t.Title); }, function () {});
   }
   S.raiseTab = decision; render(); toast('Raise ' + decision.toLowerCase());
 }
@@ -2693,6 +2800,7 @@ var A = {
       changeTask(t, { OwnerEmail: to, AssignedByEmail: S.myEmail, SeenByOwner: false, Status: 'Not Started', PlannedDate: R.isDate(sb.suggest) ? sb.suggest : S.today,
         SendBack: (t.SendBack || []).concat([{ by: S.myEmail, at: nowIso(), reason: sb.reason, note: sb.note.trim(), suggest: sb.suggest || '' }]) }, 0);
       logActivity(t, 'Sent back to ' + nameOf(to), sb.reason + ' — ' + sb.note.trim());
+      MAIL.send([to], nameOf(S.myEmail) + ' sent back: ' + titleOf(t), mailFacts({ OwnerEmail: to, Kind: t.Kind, PlannedDate: R.isDate(sb.suggest) ? sb.suggest : S.today, Description: sb.reason + ' — ' + sb.note.trim() }, titleOf(t), nameOf(S.myEmail) + ' sent this back to you.'));
       S.drawer = null; render(); toast('Sent back to ' + nameOf(to));
     });
   },
@@ -2752,6 +2860,20 @@ var A = {
   catdel: function (el) { var i = +el.getAttribute('data-i'); myPrefs().then(function (p) { var l = (p.Categories || []).slice(); l.splice(i, 1); Q.change('BOCC_Prefs', p, { Categories: l }, 0); render(); }); },
   catup: function (el) { var i = +el.getAttribute('data-i'); if (!i) { return; } myPrefs().then(function (p) { var l = (p.Categories || []).slice(), x = l[i]; l[i] = l[i - 1]; l[i - 1] = x; Q.change('BOCC_Prefs', p, { Categories: l }, 0); render(); }); },
   newroutine: function () { routineModal0(null); },
+  mshare: function (el) { var f = S.modal.f, v = el.getAttribute('data-v'), l = (f.SharedWith || []).slice(), i = l.indexOf(v); if (i >= 0) { l.splice(i, 1); } else { l.push(v); } f.SharedWith = l; render(); },
+  dshareadd: function (el) {
+    var v = el.value; if (!v) { return; }
+    withTask(el.getAttribute('data-id'), function (t) {
+      var l = (t.SharedWith || []).slice(); if (l.indexOf(v) < 0) { l.push(v); }
+      var f = { SharedWith: l }; if (t.Visibility === 'Private' && t.OwnerEmail === S.myEmail) { f.SharedTitle = titleOf(t); }
+      changeTask(t, f, 0); logActivity(t, 'Working with', '+ ' + nameOf(v));
+      mailShared(t, titleOf(t), [v]); render(); toast(nameOf(v) + ' added — it’s on their dashboard.');
+    });
+  },
+  dsharedel: function (el) {
+    var v = el.getAttribute('data-v');
+    withTask(el.getAttribute('data-id'), function (t) { changeTask(t, { SharedWith: (t.SharedWith || []).filter(function (e) { return e !== v; }) }, 0); logActivity(t, 'Working with', '− ' + nameOf(v)); render(); });
+  },
   newdeptroutine: function (el) { var d = el.getAttribute('data-v'); if (!canEditDept(d)) { return; } S.deptNew = d; routineModal0(null, deptKey(d)); },
   deptsel: function (el) { S.deptSel = el.value; render(); },
   teamdept: function (el) { S.teamDept = el.getAttribute('data-v'); S.teamSel = ''; render(); },
